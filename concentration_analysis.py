@@ -112,7 +112,7 @@ def compute_lookthrough(H, px, w_spy, w_qqq):
 
 
 def corr_and_beta(H, px, lookback_days=750):
-    """近 ~3 年日收益:相关矩阵 + 组合对 GOOGL 的 beta 与 R²(用当前美元权重)。"""
+    """近 ~3 年日收益:GOOGL/SPY/QQQ/TQQQ sleeve 对 GOOGL 的 beta 与 R²。"""
     hist = yf.download(TICKERS, period=f"{lookback_days}d", interval="1d", progress=False)["Close"]
     R = hist.pct_change().dropna()
     usd = np.array([H["googl_shares"]*px["GOOGL"], H["spy_usd"], H["qqq_usd"], H["tqqq_usd"]], float)
@@ -138,7 +138,16 @@ def _safe_div(a, b):
     return float(a / b) if b else float("nan")
 
 
+def _csv_path_from_config():
+    try:
+        import config_local as C
+    except ImportError:
+        return None
+    return getattr(C, "HOLDINGS_CSV", None) or getattr(C, "CSV_PATH", None)
+
+
 def print_report(csv_path=None):
+    csv_path = csv_path or _csv_path_from_config()
     print("=== 1) 价格与 ETF 内 Alphabet 权重 ===")
     px = fetch_prices()
     if csv_path:
@@ -189,12 +198,12 @@ def print_report(csv_path=None):
         print(f"GOOGL {shock:+.0%}: 流动账户损失 {_usd(liquid_loss)} | 含 RSU 损失 {_usd(rsu_loss)}")
     print("提示:GOOGL 大跌也可能同时打击工作稳定性与未来 RSU 归属,这不是普通股票 beta。")
 
-    print("\n=== 5) 相关矩阵 + 组合对 GOOGL 的 beta/R² ===")
+    print("\n=== 5) GOOGL/SPY/QQQ/TQQQ sleeve 对 GOOGL 的 beta/R² ===")
     try:
         corr, beta, r2 = corr_and_beta(H, px)
         print(corr.round(2).to_string())
-        print(f"\n组合对 GOOGL 的 beta: {beta:.2f} | R²: {r2:.2f}")
-        print("读法:所谓分散里有多少其实还是 GOOGL/科技 beta,看 beta 与 R² 是否偏高。")
+        print(f"\n该 sleeve 对 GOOGL 的 beta: {beta:.2f} | R²: {r2:.2f}")
+        print("读法:这里只覆盖 GOOGL/SPY/QQQ/TQQQ 这条科技/指数 sleeve,不是全账户因子回归;全账户看 factor_xray.py。")
     except Exception as e:
         print(f"相关/beta 获取失败: {e}")
 
@@ -202,6 +211,7 @@ def print_report(csv_path=None):
     print("- GOOG + GOOGL 合并计算 Alphabet 敞口。")
     print("- TQQQ 用 3x 名义敞口;路径衰减、日重置、波动损耗另算。")
     print("- 人力资本一行仅为示意,不是可交易资产估值。")
+    print("- beta/R² 只覆盖 GOOGL/SPY/QQQ/TQQQ sleeve;全组合风险请看 factor_xray.py。")
     print("- 本脚本不构成投资建议。")
 
 
