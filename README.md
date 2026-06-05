@@ -45,6 +45,7 @@ pytest -q
 - intraday seasonality 的三类合成 guardrail:无 edge / 真 seasonality / 动量陷阱
 - regime fragility、归因、long/short、Polygon 数据 contract
 - `signal_lab` 通用信号证伪
+- paper trading 本地 broker / 风控 / Alpaca paper adapter 的离线测试
 - GOOGL 穿透、factor x-ray、RSU 分散模拟的离线数学测试
 
 ## A. 信号证伪机
@@ -95,6 +96,33 @@ print_verdict(v)
 - `reversal_signal`:lookback 累计收益反转
 
 一个信号只有全部 gate 都通过才算 PASS:扣成本后为正、超过随机地板、非单票主导、不是只在高波动日赚钱、抽掉极端日仍成立、按天 bootstrap CI 下界大于 0。
+
+### `paper_broker.py` / `paper_runner.py`
+
+纸面 forward-test 执行层。它不证明 alpha,只把已经通过研究关卡的订单意图变成可审计的 paper orders / fills / positions。
+
+离线本地纸面账户:
+
+```python
+from paper_broker import LocalPaperBroker, OrderIntent, RiskGate, RiskLimits
+
+broker = LocalPaperBroker(cash=100_000, price_map={"AAPL": 200.0}, slippage_bps=1.0)
+gate = RiskGate(RiskLimits(max_order_notional=5_000, max_symbol_notional=20_000))
+broker.submit_order(OrderIntent("AAPL", "buy", notional=1_000, reason="demo"), risk_gate=gate)
+print(broker.positions_frame())
+```
+
+把回测/信号结果转成订单:
+
+```python
+from paper_runner import intents_from_picks, run_intents, print_broker_report
+
+intents = intents_from_picks(backtest_result, notional_per_trade=1_000)
+run_intents(broker, intents, risk_gate=gate)
+print_broker_report(broker)
+```
+
+真实 paper API 目前提供 `AlpacaPaperBroker`,只允许连接 `https://paper-api.alpaca.markets`,避免误连 live。需要环境变量 `ALPACA_API_KEY` / `ALPACA_SECRET_KEY`。Polygon/Massive 适合行情数据;订单模拟和 paper execution 需要 broker API,所以两者角色不同。
 
 ## B. 个人风险 X 光机
 
