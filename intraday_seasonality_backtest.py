@@ -126,6 +126,29 @@ def backtest(lr, lookback=LOOKBACK, cost_rt_bps=COST_RT_BPS, mode="raw", select=
             rows.append(dict(date=d,slot=s,pick=pick,gross=rz,net=rz-cost_rt_bps/1e4))
     return pd.DataFrame(rows)
 
+def backtest_ls(lr, lookback=LOOKBACK, cost_rt_bps=COST_RT_BPS):
+    """每个 (day, slot): 用前 lookback 天同槽均值排序,long 头名 / short 尾名(美元中性)。
+    净 = (r_long - r_short) - 2*往返成本(两条腿各付一次)。不改动 backtest 本体。"""
+    piv = _pivot(lr)
+    dates = sorted(lr["date"].unique()); slots = sorted(lr["slot"].unique())
+    dlev = piv.index.get_level_values("date"); rows = []
+    for i in range(lookback, len(dates)):
+        d = dates[i]; sub = piv[dlev.isin(set(dates[i-lookback:i]))]
+        for s in slots:
+            tr = sub.xs(s, level="slot"); sc = tr.mean().dropna()
+            if len(sc) < 2:
+                continue
+            L, S = sc.idxmax(), sc.idxmin()
+            try:
+                rl = piv.loc[(d, s), L]; rs = piv.loc[(d, s), S]
+            except KeyError:
+                continue
+            if pd.isna(rl) or pd.isna(rs):
+                continue
+            rows.append(dict(date=d, slot=s, long=L, short=S,
+                             gross=float(rl - rs), net=float((rl - rs) - 2 * cost_rt_bps / 1e4)))
+    return pd.DataFrame(rows)
+
 def _market_move(lr):
     """当日 |大盘| 代理(与 regime_split 用的口径一致)。"""
     return _pivot(lr).groupby(level="date").mean().mean(axis=1).abs()
@@ -186,6 +209,26 @@ def print_attribution(res):
     print("按票 (前5, 按总净排序):"); print(by_t.head(5).round(1).to_string())
     print(f"\n头名贡献占总净 P&L 的 {share:.0f}%  (>~70% => 单票主导=动量, 非广义seasonality)")
     print("\n按槽 (均净 bps):"); print(by_s["mean_net_bps"].round(2).to_string())
+
+def _strategy_stats(res, lr):
+    hi,lo=regime_split(lr,res)
+    return dict(net_bps=float(res["net"].mean()*1e4),
+                win_pct=float((res["net"]>0).mean()*100),
+                cum_pct=float(((1+res["net"]).cumprod().iloc[-1]-1)*100),
+                hi_bps=float(hi),
+                lo_bps=float(lo))
+
+def compare_long_only_vs_ls(lr):
+    """对比原版 long-only 与 long/short 中性版:收益、胜率、累计、regime split。"""
+    lo=backtest(lr,mode="raw")
+    ls=backtest_ls(lr)
+    rows=pd.DataFrame({"long_only":_strategy_stats(lo,lr),
+                       "long_short":_strategy_stats(ls,lr)}).T
+    print("long-only vs long/short (net bps/trade, win, cumulative, regime):")
+    print(rows.rename(columns=dict(net_bps="净/笔bps",win_pct="胜率%",
+                                   cum_pct="累计净%",hi_bps="高波动bps",
+                                   lo_bps="低波动bps")).round(2).to_string())
+    return rows
 
 def regime_split(lr,res):
     mkt=_market_move(lr); med=mkt.median()
