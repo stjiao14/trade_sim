@@ -10,3 +10,15 @@ HC_YEARS   = 0                # 计入几年人力资本(示意,例如 5);0 = �
 # ETF 内 Alphabet(GOOGL+GOOG 合计)权重的手动兜底值(自动抓取失败时用)。
 # 核对来源:QQQ -> Invesco 持仓页;SPY -> SSGA SPDR 持仓页。
 FALLBACK_WEIGHTS = dict(spy_alphabet=0.038, qqq_alphabet=0.050)
+
+# RSU 归属后 HOLD vs SELL 分散模拟器用的 dummy 配置。
+# 真实数字请放 config_local.py 的 VEST_HOLDINGS 里,不要提交。
+VEST_HOLDINGS = dict(
+    goog_price=250.0,           # 当前 GOOG/GOOGL 价(仅用于 RSU 股数换算)
+    rsu_unvested_usd=100_000.0, # 未归属 RSU 现值(美元);dummy 示例,非真实金额
+    liquid_goog_usd=20_000.0,   # 流动账户里的 GOOG 等价敞口;dummy 示例
+    liquid_basket_usd=180_000.0,# 流动账户其余(视作分散篮子);dummy 示例
+)
+VEST_MONTHS = list(range(3, 49, 3))
+BASKET_PROXY = "VT"
+N_PATHS = 20000
