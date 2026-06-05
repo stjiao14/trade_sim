@@ -1,9 +1,5 @@
 """合成对照回归关:锁住 '无edge / 真seasonality / 动量陷阱' 三种判读。
 任何改动后必须全过,否则说明判别逻辑被动坏了。"""
-import os, sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 import numpy as np, pandas as pd
 import intraday_seasonality_backtest as bt
 
@@ -28,7 +24,8 @@ def make_panel(seed, season=0.0, trend=0.0, n=N_TICKERS, days=60):
     return pd.concat(frames, ignore_index=True)
 
 def _eval(**kw):
-    return bt.evaluate(make_panel(42, **kw), lookback=LOOKBACK, cost_rt_bps=COST_RT_BPS)
+    return bt.evaluate(make_panel(42, **kw), lookback=LOOKBACK, cost_rt_bps=COST_RT_BPS,
+                       random_seeds=8)
 
 def test_pure_noise_has_no_edge():
     m = _eval(season=0.0, trend=0.0)
@@ -77,7 +74,7 @@ def test_genuine_seasonality_is_regime_robust():
     lr = make_true_uniform()
     res = bt.backtest(lr, mode="raw")
     dvd = bt.drop_top_vol_days(res, lr)
-    reg = bt.season_excess_by_regime(lr)
+    reg = bt.season_excess_by_regime(lr, seeds=8)
     # 抽掉 top-5 高波动日,edge 仍显著为正(真信号不靠那几天)
     mean5, t5, _ = dvd[5]
     assert mean5 > 0 and t5 > 1.0, dvd
@@ -88,7 +85,7 @@ def test_regime_momentum_trap_collapses():
     lr = make_regime_trap()
     res = bt.backtest(lr, mode="raw")
     dvd = bt.drop_top_vol_days(res, lr)
-    reg = bt.season_excess_by_regime(lr)
+    reg = bt.season_excess_by_regime(lr, seeds=8)
     # 抽掉高波动日后不再显著为正(edge 靠那几天)
     _, t5, _ = dvd[5]
     assert t5 < 1.0, dvd
