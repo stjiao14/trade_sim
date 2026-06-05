@@ -75,7 +75,8 @@ def excess_over_random(lr, signal_fn, lookback=LOOKBACK, seeds=20):
     return float((a - f) * 1e4)
 
 
-def falsify(lr, signal_fn, lookback=LOOKBACK, conc_max=30.0, drop_ks=(0,1,3,5)):
+def falsify(lr, signal_fn, lookback=LOOKBACK, conc_max=30.0, drop_ks=(0,1,3,5),
+            random_seeds=20, bootstrap_n=10000):
     """跑全套关卡,返回 dict: 每个 gate 的指标 + 通过与否 + 总判 PASS/FAIL + 原因。"""
     res = run(lr, signal_fn, lookback=lookback)
     net = res["net"].mean() * 1e4
@@ -84,8 +85,8 @@ def falsify(lr, signal_fn, lookback=LOOKBACK, conc_max=30.0, drop_ks=(0,1,3,5)):
     hi, lo = regime_split(lr, res)
     dvd = drop_top_vol_days(res, lr, ks=drop_ks)
     k_last = max(drop_ks); mean_k, t_k, _ = dvd[k_last]
-    daily = daily_net_bps(res); dm, dlo, dhi = bootstrap_daily(daily)
-    xs = excess_over_random(lr, signal_fn, lookback=lookback)
+    daily = daily_net_bps(res); dm, dlo, dhi = bootstrap_daily(daily, n=bootstrap_n)
+    xs = excess_over_random(lr, signal_fn, lookback=lookback, seeds=random_seeds)
     ls_net = run_ls(lr, signal_fn, lookback=lookback)["net"].mean() * 1e4
 
     gates = {
