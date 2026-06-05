@@ -2,6 +2,11 @@
 
 真实金额请放在 git-ignored 的 config_local.py。本脚本只做风险量化,不构成投资建议。
 """
+import json
+import os
+import urllib.parse
+import urllib.request
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -40,8 +45,42 @@ def _load_config():
     return H, basket_proxy, n_paths, source
 
 
-def calibrate(basket_proxy, lookback_days=1260):
-    """近 ~5 年日收益估 GOOG / 篮子 的年化波动与相关。mu 不估,默认两者相等。"""
+def _polygon_daily_close(ticker, start, end, api_key):
+    """Polygon adjusted daily close。返回 date-indexed Series。"""
+    params = urllib.parse.urlencode(dict(adjusted="true", sort="asc", limit=50000, apiKey=api_key))
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}?{params}"
+    with urllib.request.urlopen(url, timeout=30) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    if data.get("status") not in {"OK", "DELAYED"} or not data.get("results"):
+        raise ValueError(f"Polygon {ticker} 无可用日线: {data.get('status')} {data.get('error')}")
+    df = pd.DataFrame(data["results"])
+    idx = pd.to_datetime(df["t"], unit="ms", utc=True).dt.tz_convert("America/New_York").dt.date
+    return pd.Series(df["c"].astype(float).values, index=pd.Index(idx, name="date"), name=ticker)
+
+
+def _calibrate_polygon(basket_proxy, lookback_days, api_key=None):
+    """优先用 Polygon adjusted daily close 估 GOOG / basket 的 sigma/rho。"""
+    key = api_key or os.getenv("POLYGON_API_KEY")
+    if not key:
+        raise ValueError("POLYGON_API_KEY 未设置")
+    end = pd.Timestamp.today(tz="America/New_York").date()
+    start = (pd.Timestamp(end) - pd.Timedelta(days=int(lookback_days * 1.7 + 30))).date()
+    g = _polygon_daily_close("GOOGL", start, end, key)
+    b = _polygon_daily_close(basket_proxy, start, end, key)
+    px = pd.concat([g, b], axis=1).dropna().tail(lookback_days)
+    if len(px) < max(100, lookback_days // 3):
+        raise ValueError(f"Polygon 有效日线太少: {len(px)}")
+    r = np.log(px).diff().dropna()
+    sg = float(r["GOOGL"].std() * np.sqrt(252))
+    sb = float(r[basket_proxy].std() * np.sqrt(252))
+    rho = float(r["GOOGL"].corr(r[basket_proxy]))
+    if not (np.isfinite(sg) and np.isfinite(sb) and np.isfinite(rho)):
+        raise ValueError("Polygon 校准结果包含 NaN/inf")
+    return sg, sb, rho
+
+
+def _calibrate_yfinance(basket_proxy, lookback_days):
+    """yfinance fallback:近 ~5 年日收益估 GOOG / 篮子的年化波动与相关。"""
     px = yf.download(["GOOGL", basket_proxy], period=f"{lookback_days}d", interval="1d",
                      progress=False, auto_adjust=False)["Close"].dropna()
     r = np.log(px).diff().dropna()
@@ -51,6 +90,15 @@ def calibrate(basket_proxy, lookback_days=1260):
     if not (np.isfinite(sg) and np.isfinite(sb) and np.isfinite(rho)):
         raise ValueError("校准结果包含 NaN/inf")
     return sg, sb, rho
+
+
+def calibrate(basket_proxy, lookback_days=1260, api_key=None):
+    """近 ~5 年日收益估 GOOG / 篮子 sigma/rho。优先 Polygon,失败再 yfinance。"""
+    try:
+        return (*_calibrate_polygon(basket_proxy, lookback_days, api_key=api_key), "polygon")
+    except Exception as exc:
+        print(f"WARNING: Polygon 校准失败,回落 yfinance: {exc}")
+    return (*_calibrate_yfinance(basket_proxy, lookback_days), "yfinance")
 
 
 def simulate(cfg, mu_g, mu_b, sg, sb, rho, N=20000, seed=0):
@@ -166,11 +214,11 @@ def main():
     cfg, basket_proxy, n_paths, source = _load_config()
     print(f"配置来源: {source} | basket proxy: {basket_proxy}")
     try:
-        sg, sb, rho = calibrate(basket_proxy)
-        print("历史 sigma/rho 校准: fetched")
+        sg, sb, rho, provider = calibrate(basket_proxy)
+        print(f"历史 sigma/rho 校准: {provider}")
     except Exception as exc:
         sg, sb, rho = FALLBACK_SIGMA_GOOG, FALLBACK_SIGMA_BASKET, FALLBACK_RHO
-        print(f"WARNING: yfinance 校准失败,使用兜底 sigma/rho: {exc}")
+        print(f"WARNING: Polygon/yfinance 校准都失败,使用兜底 sigma/rho: {exc}")
     print_report(cfg, sg, sb, rho, N=n_paths)
 
 
