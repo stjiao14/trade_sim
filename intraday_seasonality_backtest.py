@@ -16,6 +16,7 @@ intraday_seasonality_backtest.py  (v3)
 import numpy as np, pandas as pd
 import os, time, json
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 UNIVERSE    = ["AAPL","ABNB","ORCL","AMD","JPM","AMZN","ASML","XOM","AVGO"]
@@ -34,7 +35,7 @@ def _add_query(url, **params):
     p=urlparse(url); q=dict(parse_qsl(p.query)); q.update({k:v for k,v in params.items() if v is not None})
     return urlunparse(p._replace(query=urlencode(q)))
 
-def _polygon_get(url, api_key, sleep=0.2):
+def _polygon_get(url, api_key, sleep=12.5):
     """Polygon 分页请求小工具。免费档可能限速,遇到 429 稍等后重试。"""
     url=_add_query(url, apiKey=api_key)
     for i in range(5):
@@ -43,9 +44,14 @@ def _polygon_get(url, api_key, sleep=0.2):
                 data=json.loads(r.read().decode("utf-8"))
             time.sleep(sleep)
             return data
+        except HTTPError as e:
+            if e.code == 429 and i<4:
+                time.sleep(65)
+                continue
+            raise
         except Exception as e:
             if "HTTP Error 429" in str(e) and i<4:
-                time.sleep(2**i)
+                time.sleep(65)
                 continue
             raise
 
