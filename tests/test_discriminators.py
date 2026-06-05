@@ -127,6 +127,14 @@ def test_bars_contract_path_is_offline_and_filters_half_days():
     m = bt.evaluate(lr, lookback=LOOKBACK, cost_rt_bps=COST_RT_BPS)
     assert m["n_test_days"] > 0, m
 
+def test_long_short_runs_and_amplifies_genuine_seasonality():
+    lr = make_panel(42, season=0.001)
+    lo = bt.backtest(lr, mode="raw")
+    ls = bt.backtest_ls(lr)
+    assert len(ls) == len(lo), (len(ls), len(lo))          # 每个交易日每槽一笔
+    assert ls["net"].mean() > 0, ls["net"].mean()          # 真信号下中性版为正
+    assert ls["net"].mean() * 1e4 > lo["net"].mean() * 1e4 # 两侧都吃到信号 => 强于long-only
+
 if __name__ == "__main__":
     for fn in (test_pure_noise_has_no_edge,
                test_true_seasonality_detected,
@@ -134,6 +142,7 @@ if __name__ == "__main__":
                test_genuine_seasonality_is_regime_robust,
                test_regime_momentum_trap_collapses,
                test_attribution_flags_single_name_dominance,
-               test_bars_contract_path_is_offline_and_filters_half_days):
+               test_bars_contract_path_is_offline_and_filters_half_days,
+               test_long_short_runs_and_amplifies_genuine_seasonality):
         fn(); print("PASS", fn.__name__)
     print("ALL GUARDRAILS PASS")
