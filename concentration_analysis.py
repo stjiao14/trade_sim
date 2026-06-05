@@ -32,6 +32,70 @@ def fetch_alphabet_weight(etf, fallback):
     return float(fallback), "FALLBACK(请手动核对!)"
 
 
+def _num(x):
+    v = pd.to_numeric(x, errors="coerce")
+    return 0.0 if pd.isna(v) else float(v)
+
+
+def _ticker(row):
+    v = row.get("ticker_symbol", "")
+    return "" if pd.isna(v) else str(v).upper().strip()
+
+
+def _name(row):
+    v = row.get("name", "")
+    return "" if pd.isna(v) else str(v)
+
+
+def load_holdings_from_csv(path, px):
+    """从持仓 CSV 直接生成脚本所需 HOLDINGS。真实金额只留在本地 CSV,不写入代码。"""
+    df = pd.read_csv(path)
+    required = {"ticker_symbol", "name", "subtype", "institution_value"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV 缺少必要列: {sorted(missing)}")
+
+    H = dict(googl_shares=0.0, rsu_unvested_shares=0.0,
+             spy_usd=0.0, qqq_usd=0.0, tqqq_usd=0.0)
+    notes = []
+    liquid_total = 0.0
+
+    for _, row in df.iterrows():
+        val = _num(row.get("institution_value", 0.0))
+        if val == 0:
+            continue
+        tk = _ticker(row)
+        nm = _name(row)
+        subtype = "" if pd.isna(row.get("subtype", "")) else str(row.get("subtype", "")).lower()
+        is_rsu = subtype == "rsu"
+
+        if not is_rsu:
+            liquid_total += val
+
+        # GOOG/GOOGL 统一按美元价值折算成 GOOGL 等价股数,避免 A/C 股价格小差异污染敞口。
+        if tk in {"GOOGL", "GOOG"}:
+            if is_rsu:
+                H["rsu_unvested_shares"] += val / px["GOOGL"]
+                notes.append(f"RSU: {tk} {val:,.0f} USD -> GOOGL 等价")
+            else:
+                H["googl_shares"] += val / px["GOOGL"]
+                notes.append(f"直接 Alphabet: {tk} {val:,.0f} USD -> GOOGL 等价")
+            continue
+
+        if tk == "SPY" or "500 Index" in nm:
+            H["spy_usd"] += val
+            notes.append(f"SPY-like: {tk or nm} {val:,.0f} USD")
+        elif tk in {"QQQ", "QQQM"} or "NASDAQ 100" in nm.upper():
+            H["qqq_usd"] += val
+            notes.append(f"QQQ-like: {tk or nm} {val:,.0f} USD")
+        elif tk == "TQQQ":
+            H["tqqq_usd"] += val
+            notes.append(f"TQQQ: {val:,.0f} USD")
+
+    H["total_liquid_usd"] = liquid_total
+    return H, notes, df
+
+
 def compute_lookthrough(H, px, w_spy, w_qqq):
     googl_stock = H["googl_shares"] * px["GOOGL"]
     rsu         = H["rsu_unvested_shares"] * px["GOOGL"]
@@ -43,7 +107,7 @@ def compute_lookthrough(H, px, w_spy, w_qqq):
             ("QQQ look-through",  H["qqq_usd"],  qqq_lt),
             ("TQQQ look-through(3x名义)", H["tqqq_usd"], tqqq_lt)]
     liquid_googl = googl_stock + spy_lt + qqq_lt + tqqq_lt
-    liquid_nw    = googl_stock + H["spy_usd"] + H["qqq_usd"] + H["tqqq_usd"]
+    liquid_nw    = H.get("total_liquid_usd", googl_stock + H["spy_usd"] + H["qqq_usd"] + H["tqqq_usd"])
     return rows, liquid_googl, liquid_nw, rsu
 
 
@@ -74,13 +138,20 @@ def _safe_div(a, b):
     return float(a / b) if b else float("nan")
 
 
-def print_report():
-    if CONFIG_SOURCE != "config_local.py":
-        print("WARNING: 未找到 config_local.py, 正在使用 config_example.py 的 dummy 数字。")
-        print("         请复制 config_example.py -> config_local.py 并填入真实持仓;config_local.py 已被 git-ignore。\n")
-
+def print_report(csv_path=None):
     print("=== 1) 价格与 ETF 内 Alphabet 权重 ===")
     px = fetch_prices()
+    if csv_path:
+        H, notes, _ = load_holdings_from_csv(csv_path, px)
+        print(f"持仓来源: CSV 本地文件 {csv_path}")
+    else:
+        H = HOLDINGS
+        notes = []
+        if CONFIG_SOURCE != "config_local.py":
+            print("WARNING: 未找到 config_local.py, 正在使用 config_example.py 的 dummy 数字。")
+            print("         请复制 config_example.py -> config_local.py 并填入真实持仓;config_local.py 已被 git-ignore。")
+        print(f"持仓来源: {CONFIG_SOURCE}")
+
     w_spy, src_spy = fetch_alphabet_weight("SPY", FALLBACK_WEIGHTS["spy_alphabet"])
     w_qqq, src_qqq = fetch_alphabet_weight("QQQ", FALLBACK_WEIGHTS["qqq_alphabet"])
     for t in TICKERS:
@@ -89,8 +160,12 @@ def print_report():
     print(f"QQQ Alphabet(GOOGL+GOOG) 权重: {_pct(w_qqq)} [{src_qqq}]")
     if "FALLBACK" in src_spy or "FALLBACK" in src_qqq:
         print("!!! FALLBACK: ETF 权重为手动兜底值,请去发行商持仓页核对后再作结论。")
+    if notes:
+        print("\nCSV 映射摘要:")
+        for n in notes:
+            print(f"- {n}")
 
-    rows, liquid_googl, liquid_nw, rsu = compute_lookthrough(HOLDINGS, px, w_spy, w_qqq)
+    rows, liquid_googl, liquid_nw, rsu = compute_lookthrough(H, px, w_spy, w_qqq)
     table = pd.DataFrame(rows, columns=["来源", "市值", "GOOGL等价敞口"])
     print("\n=== 2) 穿透敞口表 ===")
     print(table.assign(市值=table["市值"].map(_usd),
@@ -116,7 +191,7 @@ def print_report():
 
     print("\n=== 5) 相关矩阵 + 组合对 GOOGL 的 beta/R² ===")
     try:
-        corr, beta, r2 = corr_and_beta(HOLDINGS, px)
+        corr, beta, r2 = corr_and_beta(H, px)
         print(corr.round(2).to_string())
         print(f"\n组合对 GOOGL 的 beta: {beta:.2f} | R²: {r2:.2f}")
         print("读法:所谓分散里有多少其实还是 GOOGL/科技 beta,看 beta 与 R² 是否偏高。")
@@ -131,4 +206,4 @@ def print_report():
 
 
 if __name__=="__main__":
-    print_report()
+    print_report(sys.argv[1] if len(sys.argv) > 1 else None)
