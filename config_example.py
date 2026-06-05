@@ -25,3 +25,16 @@ VEST_HOLDINGS = dict(
 VEST_MONTHS = list(range(3, 49, 3))
 BASKET_PROXY = "VT"
 N_PATHS = 20000
+
+# Paper trading / forward-test dummy 配置。真实 key 用环境变量,不要写进 config。
+PAPER_TRADING = dict(
+    starting_cash=100_000.0,
+    max_order_notional=5_000.0,
+    max_symbol_notional=20_000.0,
+    max_gross_notional=100_000.0,
+    allow_short=False,
+    blocked_symbols=[],
+    slippage_bps=1.0,
+    commission_bps=0.0,
+    alpaca_base_url="https://paper-api.alpaca.markets",
+)
