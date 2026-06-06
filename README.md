@@ -331,7 +331,21 @@ First-pass engine for Txtadel-style close-to-next-open ETF baskets. This is inte
 python overnight_basket_backtest.py --tickers XLU,GLD,EMXC,XLE,SMH,CGDV,XLI,AVUV --start 2019-01-01 --provider auto --cost-bps 1
 ```
 
-`--provider auto` tries Polygon/Massive first when configured, then falls back to yfinance. The current version supports fixed equal-weight or custom-weight basket research from Python. The next layer is to add VIX and macro-proxy gates, then candidate ETF selection rules.
+Add the first two-axis risk gate:
+
+```bash
+python overnight_basket_backtest.py --tickers XLU,GLD,EMXC,XLE,SMH,CGDV,XLI,AVUV --start 2019-01-01 --provider auto --cost-bps 1 --gate vix-macro --vix-max 30 --risk-on XLY --risk-off XLP --macro-lookback 200 --macro-min -0.20 --decision-lag 1
+```
+
+The macro axis is:
+
+```text
+((XLY/XLP)_today - (XLY/XLP)_{today-200}) / (XLY/XLP)_today
+```
+
+`--decision-lag 1` is the honest default: today's close order uses the previous completed session's VIX and macro state. `--decision-lag 0` reproduces a same-day-close rule, but only use it if the real process has those inputs before submitting the MOC order.
+
+`--provider auto` tries Polygon/Massive first when configured, then falls back to yfinance. The current version supports fixed equal-weight or custom-weight basket research from Python. The next layer is candidate ETF selection rules.
 
 Useful Python entry points:
 

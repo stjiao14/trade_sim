@@ -48,3 +48,28 @@ def test_performance_metrics_are_finite_for_nonempty_result():
     assert m["n_days"] == 3
     assert np.isfinite(m["total_return_pct"])
     assert np.isfinite(m["mean_bps"])
+
+
+def test_regime_panel_computes_macro_roc():
+    idx = pd.bdate_range("2026-01-01", periods=5)
+    bars = {
+        "^VIX": pd.DataFrame({"Open": [20, 20, 20, 20, 20], "Close": [18, 22, 31, 25, 19]}, index=idx),
+        "XLY": pd.DataFrame({"Open": [1, 1, 1, 1, 1], "Close": [100, 110, 120, 90, 130]}, index=idx),
+        "XLP": pd.DataFrame({"Open": [1, 1, 1, 1, 1], "Close": [100, 100, 100, 100, 100]}, index=idx),
+    }
+    reg = ob.regime_panel(bars, macro_lookback=2)
+    expected = (120 / 100 - 100 / 100) / (120 / 100)
+    assert abs(reg.loc[idx[2], "macro_roc"] - expected) < 1e-12
+
+
+def test_apply_regime_gate_uses_lagged_decision_data():
+    r = ob.overnight_returns(_bars())
+    res = ob.backtest_static_basket(r, cost_bps=0.0)
+    regime = pd.DataFrame(
+        {"vix": [20.0, 35.0, 20.0], "macro_roc": [0.0, 0.0, -0.5]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"]),
+    )
+    same_day = ob.apply_regime_gate(res, regime, vix_max=30, macro_min=-0.2, decision_lag=0)
+    lagged = ob.apply_regime_gate(res, regime, vix_max=30, macro_min=-0.2, decision_lag=1)
+    assert list(same_day["date"]) == [pd.Timestamp("2026-01-02")]
+    assert list(lagged["date"]) == [pd.Timestamp("2026-01-05")]

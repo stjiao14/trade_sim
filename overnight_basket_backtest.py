@@ -19,6 +19,9 @@ import pandas as pd
 
 DEFAULT_UNIVERSE = ["XLU", "GLD", "EMXC", "XLE", "SMH", "CGDV", "XLI", "AVUV"]
 TRADING_DAYS = 252
+DEFAULT_VIX_TICKER = "^VIX"
+DEFAULT_RISK_ON = "XLY"
+DEFAULT_RISK_OFF = "XLP"
 
 
 def _local_config_value(name, default=None):
@@ -193,6 +196,45 @@ def benchmark_close_to_close(bars, ticker="SPY"):
     return b["Close"].pct_change().dropna().rename(ticker)
 
 
+def regime_panel(bars, vix_ticker=DEFAULT_VIX_TICKER, risk_on=DEFAULT_RISK_ON,
+                 risk_off=DEFAULT_RISK_OFF, macro_lookback=200):
+    """Build the two-axis risk-control panel.
+
+    macro_roc follows the described rule:
+        ((XLY/XLP)_t - (XLY/XLP)_{t-lookback}) / (XLY/XLP)_t
+
+    Higher macro_roc means the risk-on/risk-off ratio is healthier versus its
+    long lookback. Lower values are treated as macro stress.
+    """
+    missing = [t for t in (vix_ticker, risk_on, risk_off) if t not in bars]
+    if missing:
+        raise ValueError(f"missing regime tickers: {missing}")
+    vix = _clean_ohlc_frame(bars[vix_ticker])["Close"].rename("vix")
+    ro = _clean_ohlc_frame(bars[risk_on])["Close"]
+    rf = _clean_ohlc_frame(bars[risk_off])["Close"]
+    ratio = (ro / rf).rename("risk_ratio")
+    macro_roc = ((ratio - ratio.shift(macro_lookback)) / ratio).rename("macro_roc")
+    return pd.concat([vix, ratio, macro_roc], axis=1).dropna(how="any")
+
+
+def apply_regime_gate(res, regime, vix_max=30.0, macro_min=-0.20, decision_lag=1):
+    """Filter trades by VIX and macro-ratio conditions.
+
+    decision_lag=1 uses the previous session's completed regime data for today's
+    close order. decision_lag=0 reproduces a same-day-close rule, but that is
+    only appropriate if the implementation truly has the needed inputs before
+    sending the MOC order.
+    """
+    if res.empty:
+        return res.copy()
+    rg = regime[["vix", "macro_roc"]].shift(int(decision_lag))
+    out = res.copy()
+    out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None).dt.normalize()
+    joined = out.join(rg, on="date")
+    joined["trade_allowed"] = (joined["vix"] <= vix_max) & (joined["macro_roc"] >= macro_min)
+    return joined[joined["trade_allowed"]].reset_index(drop=True)
+
+
 def print_report(res, metrics, title="overnight basket"):
     """Print a clean text report."""
     print(f"== {title} ==")
@@ -209,6 +251,20 @@ def print_report(res, metrics, title="overnight basket"):
     print("This script is research tooling, not investment advice.")
 
 
+def print_gate_comparison(base_res, gated_res, bench=None, title="VIX + macro gate"):
+    """Print before/after performance for a risk gate."""
+    base_m = performance_metrics(base_res, benchmark=bench)
+    gate_m = performance_metrics(gated_res, benchmark=bench)
+    print(f"\n== {title} comparison ==")
+    print("version        days   mean bps   win%   CAGR%   Sharpe   maxDD%")
+    for name, m in [("ungated", base_m), ("gated", gate_m)]:
+        print(f"{name:<12} {m['n_days']:>5} {m['mean_bps']:>10.2f} {m['win_rate_pct']:>6.1f} "
+              f"{m['cagr_pct']:>7.1f} {m['sharpe']:>8.2f} {m['max_drawdown_pct']:>8.1f}")
+    if len(base_res):
+        kept = len(gated_res) / len(base_res) * 100
+        print(f"gate kept {kept:.1f}% of overnight trades")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Backtest a fixed close-to-next-open ETF basket.")
     ap.add_argument("--tickers", default=",".join(DEFAULT_UNIVERSE), help="Comma-separated ETF basket.")
@@ -217,16 +273,42 @@ def main(argv=None):
     ap.add_argument("--provider", choices=["auto", "polygon", "yfinance"], default="auto")
     ap.add_argument("--cost-bps", type=float, default=1.0, help="Round-trip cost per basket trade.")
     ap.add_argument("--benchmark", default="SPY", help="Close-to-close benchmark ticker, if loaded.")
+    ap.add_argument("--gate", choices=["none", "vix-macro"], default="none",
+                    help="Optional risk gate applied before the close-to-open trade.")
+    ap.add_argument("--vix-ticker", default=DEFAULT_VIX_TICKER)
+    ap.add_argument("--risk-on", default=DEFAULT_RISK_ON, help="Risk-on ETF for macro ratio numerator.")
+    ap.add_argument("--risk-off", default=DEFAULT_RISK_OFF, help="Risk-off ETF for macro ratio denominator.")
+    ap.add_argument("--macro-lookback", type=int, default=200)
+    ap.add_argument("--vix-max", type=float, default=30.0)
+    ap.add_argument("--macro-min", type=float, default=-0.20)
+    ap.add_argument("--decision-lag", type=int, default=1,
+                    help="Regime rows to lag before trading. 1 avoids same-close lookahead.")
     args = ap.parse_args(argv)
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    all_tickers = sorted(set(tickers + ([args.benchmark.upper()] if args.benchmark else [])))
+    extras = [args.benchmark.upper()] if args.benchmark else []
+    if args.gate == "vix-macro":
+        extras += [args.vix_ticker.upper(), args.risk_on.upper(), args.risk_off.upper()]
+    all_tickers = sorted(set(tickers + extras))
     bars, provider = load_daily_ohlc(all_tickers, start=args.start, end=args.end, provider=args.provider)
     overnight = overnight_returns({t: bars[t] for t in tickers if t in bars})
     res = backtest_static_basket(overnight, cost_bps=args.cost_bps)
     bench = benchmark_close_to_close(bars, args.benchmark.upper()) if args.benchmark else None
-    metrics = performance_metrics(res, benchmark=bench)
-    print_report(res, metrics, title=f"overnight basket [{provider}]")
+    final_res = res
+    if args.gate == "vix-macro":
+        reg = regime_panel(bars, vix_ticker=args.vix_ticker.upper(),
+                           risk_on=args.risk_on.upper(), risk_off=args.risk_off.upper(),
+                           macro_lookback=args.macro_lookback)
+        final_res = apply_regime_gate(res, reg, vix_max=args.vix_max,
+                                      macro_min=args.macro_min, decision_lag=args.decision_lag)
+    metrics = performance_metrics(final_res, benchmark=bench)
+    label = f"overnight basket [{provider}]"
+    if args.gate != "none":
+        label += f" | gate={args.gate}"
+    print_report(final_res, metrics, title=label)
+    if args.gate == "vix-macro":
+        print_gate_comparison(res, final_res, bench=bench,
+                              title=f"VIX<={args.vix_max:g}, ROC({args.risk_on.upper()}/{args.risk_off.upper()},{args.macro_lookback})>={args.macro_min:g}, lag={args.decision_lag}")
 
 
 if __name__ == "__main__":
