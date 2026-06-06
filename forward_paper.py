@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 import intraday_seasonality_backtest as bt
-from paper_broker import LocalPaperBroker, OrderIntent, RiskGate, RiskLimits
+from paper_broker import AlpacaPaperBroker, LocalPaperBroker, OrderIntent, RiskGate, RiskLimits
 from paper_runner import broker_summary, print_broker_report
 
 
@@ -128,12 +128,31 @@ def run_forward_local(lr, prices, mode="shadow", notional_per_slot=1_000.0,
                 verdict=verdict, executed=bool(execute), summary=broker_summary(broker, prices))
 
 
+def run_forward_alpaca(lr, mode="shadow", notional_per_slot=1_000.0,
+                       broker=None, require_pass=False):
+    """生成下一交易日计划并可选提交到 Alpaca paper。默认 shadow 不发单。"""
+    plan = next_slot_picks(lr)
+    verdict = research_verdict(lr)
+    intents = intents_from_plan(plan, notional_per_slot=notional_per_slot)
+    execute = mode == "paper" and (not require_pass or verdict["verdict"] == "PASS")
+    broker = broker or AlpacaPaperBroker()
+    responses = []
+    if execute:
+        for intent in intents:
+            responses.append(broker.submit_order(intent))
+    orders = pd.DataFrame([{**asdict(i), "mode": mode, "broker": "alpaca-paper",
+                            "research_verdict": verdict["verdict"]} for i in intents])
+    summary = dict(n_orders=int(len(orders)), n_responses=int(len(responses)))
+    return dict(plan=plan, orders=orders, fills=responses, broker=broker,
+                verdict=verdict, executed=bool(execute), summary=summary)
+
+
 def write_forward_logs(run, out_dir="paper_logs"):
     """把 forward run 写成 CSV:orders/fills/plan/summary/research。"""
     p = Path(out_dir); p.mkdir(parents=True, exist_ok=True)
     run["plan"].to_csv(p / "paper_plan.csv", index=False)
     run["orders"].to_csv(p / "paper_orders.csv", index=False)
-    fills = pd.DataFrame([asdict(f) for f in run["fills"]])
+    fills = pd.DataFrame([asdict(f) if hasattr(f, "__dataclass_fields__") else f for f in run["fills"]])
     fills.to_csv(p / "paper_fills.csv", index=False)
     pd.DataFrame([run["summary"]]).to_csv(p / "paper_summary.csv", index=False)
     m = run["verdict"]["metrics"]
@@ -157,6 +176,7 @@ def main(argv=None):
     ap.add_argument("--start")
     ap.add_argument("--end")
     ap.add_argument("--mode", choices=["shadow", "paper"], default="shadow")
+    ap.add_argument("--broker", choices=["local", "alpaca-paper"], default="local")
     ap.add_argument("--notional", type=float, default=1_000.0)
     ap.add_argument("--require-pass", action="store_true")
     ap.add_argument("--out", default="paper_logs")
@@ -165,22 +185,31 @@ def main(argv=None):
     cfg = _paper_config()
     bars, lr = load_polygon_panel(start=args.start, end=args.end)
     prices = latest_close_prices(bars)
-    broker = LocalPaperBroker(
-        cash=float(cfg.get("starting_cash", 100_000.0)),
-        price_map=prices,
-        slippage_bps=float(cfg.get("slippage_bps", 1.0)),
-        commission_bps=float(cfg.get("commission_bps", 0.0)),
-    )
-    run = run_forward_local(lr, prices, mode=args.mode, notional_per_slot=args.notional,
-                            broker=broker, risk_gate=default_risk_gate(cfg),
-                            require_pass=args.require_pass)
+    if args.broker == "alpaca-paper":
+        run = run_forward_alpaca(lr, mode=args.mode, notional_per_slot=args.notional,
+                                 broker=AlpacaPaperBroker(base_url=cfg.get("alpaca_base_url",
+                                                                            "https://paper-api.alpaca.markets")),
+                                 require_pass=args.require_pass)
+    else:
+        broker = LocalPaperBroker(
+            cash=float(cfg.get("starting_cash", 100_000.0)),
+            price_map=prices,
+            slippage_bps=float(cfg.get("slippage_bps", 1.0)),
+            commission_bps=float(cfg.get("commission_bps", 0.0)),
+        )
+        run = run_forward_local(lr, prices, mode=args.mode, notional_per_slot=args.notional,
+                                broker=broker, risk_gate=default_risk_gate(cfg),
+                                require_pass=args.require_pass)
     out = write_forward_logs(run, args.out)
     v = run["verdict"]
     print(f"research {v['verdict']} | executed={run['executed']} | logs={out}")
     if v["fail_reasons"]:
         print("fail reasons:", ", ".join(v["fail_reasons"]))
     print(run["plan"].to_string(index=False))
-    print_broker_report(run["broker"], prices)
+    if args.broker == "local":
+        print_broker_report(run["broker"], prices)
+    else:
+        print(f"alpaca responses: {len(run['fills'])}")
     print("\n免责声明:paper forward-test 只是执行/记录沙盒,不构成投资建议,也不替代信号证伪。")
 
 
