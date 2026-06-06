@@ -37,4 +37,5 @@ PAPER_TRADING = dict(
     slippage_bps=1.0,
     commission_bps=0.0,
     alpaca_base_url="https://paper-api.alpaca.markets",
+    log_dir="paper_logs",
 )
