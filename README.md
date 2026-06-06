@@ -42,6 +42,12 @@ HOLDINGS_CSV = r"C:\path\to\your_holdings.csv"
 python web_ui.py
 ```
 
+Windows 上如果 `python` 被 Microsoft Store alias 抢走,可以直接用 Codex bundled Python:
+
+```powershell
+C:\Users\stjia\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe web_ui.py
+```
+
 然后打开:
 
 ```text
