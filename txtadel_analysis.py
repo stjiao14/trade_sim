@@ -12,7 +12,11 @@ It intentionally does not infer a black-box alpha from a short sample.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -104,6 +108,15 @@ def parse_txtadel_pdf(path):
     return parse_txtadel_text(text)
 
 
+def _local_config_value(name, default=None):
+    """Read optional local config without requiring config_local.py."""
+    try:
+        import config_local as cfg
+        return getattr(cfg, name, default)
+    except Exception:
+        return default
+
+
 def recompute_daily_returns(orders):
     """Recompute weighted overnight return from posted row-level gains."""
     if orders.empty:
@@ -128,6 +141,85 @@ def compare_posted_vs_recomputed(orders, daily):
     out = daily.merge(calc, on="date", how="left")
     out["diff_pct"] = out["calc_total_pct"] - out["posted_total_pct"]
     return out
+
+
+def required_history_window(orders, max_lookback=120, buffer_days=80):
+    """Return a calendar start/end window wide enough for pre-signal return history."""
+    if orders.empty:
+        raise ValueError("orders is empty")
+    d = pd.to_datetime(orders["date"])
+    start = (d.min() - pd.Timedelta(days=int(max_lookback * 2 + buffer_days))).date().isoformat()
+    end = (d.max() + pd.Timedelta(days=1)).date().isoformat()
+    return start, end
+
+
+def returns_from_closes(closes):
+    """Convert a close-price panel into daily close-to-close returns."""
+    if closes.empty:
+        return pd.DataFrame()
+    out = closes.sort_index().pct_change().dropna(how="all").fillna(0.0)
+    out.index = pd.to_datetime(out.index).tz_localize(None).normalize()
+    return out
+
+
+def load_daily_closes_yfinance(tickers, start, end):
+    """Load adjusted daily closes via yfinance."""
+    import yfinance as yf
+
+    raw = yf.download(list(tickers), start=start, end=end, interval="1d",
+                      progress=False, auto_adjust=True)["Close"]
+    if isinstance(raw, pd.Series):
+        raw = raw.to_frame(list(tickers)[0])
+    raw = raw.dropna(axis=1, how="all")
+    raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
+    return raw
+
+
+def _polygon_daily_close(ticker, start, end, api_key):
+    params = urllib.parse.urlencode(dict(adjusted="true", sort="asc", limit=50000, apiKey=api_key))
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}?{params}"
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    rows = data.get("results", [])
+    if not rows:
+        return pd.Series(dtype=float, name=ticker)
+    df = pd.DataFrame(rows)
+    idx = pd.to_datetime(df["t"], unit="ms", utc=True).dt.tz_convert("America/New_York").dt.tz_localize(None).dt.normalize()
+    return pd.Series(df["c"].astype(float).values, index=idx, name=ticker)
+
+
+def load_daily_closes_polygon(tickers, start, end, api_key=None):
+    """Load adjusted daily closes via Polygon/Massive."""
+    key = api_key or os.getenv("POLYGON_API_KEY") or _local_config_value("POLYGON_API_KEY")
+    if not key:
+        raise ValueError("POLYGON_API_KEY is not configured")
+    series = [_polygon_daily_close(t, start, end, key) for t in tickers]
+    return pd.concat(series, axis=1).dropna(axis=1, how="all")
+
+
+def load_daily_returns_for_orders(orders, lookbacks=(20, 40, 60, 120), provider="auto", api_key=None):
+    """Load daily returns needed to fit posted weights.
+
+    provider='auto' prefers Polygon/Massive when a key is configured, then falls back
+    to yfinance.
+    """
+    if orders.empty:
+        return pd.DataFrame(), "none"
+    tickers = sorted(orders["ticker"].dropna().unique())
+    start, end = required_history_window(orders, max_lookback=max(lookbacks))
+    provider = provider.lower()
+    if provider not in {"auto", "polygon", "yfinance"}:
+        raise ValueError("provider must be auto, polygon, or yfinance")
+    if provider in {"auto", "polygon"}:
+        try:
+            closes = load_daily_closes_polygon(tickers, start, end, api_key=api_key)
+            if not closes.empty:
+                return returns_from_closes(closes), "polygon"
+        except Exception:
+            if provider == "polygon":
+                raise
+    closes = load_daily_closes_yfinance(tickers, start, end)
+    return returns_from_closes(closes), "yfinance"
 
 
 def capped_normalize(raw_scores, cap=0.35):
@@ -202,7 +294,7 @@ def fit_inverse_vol_weighting(orders, returns, lookbacks=(20, 40, 60, 120), cap=
     return pd.DataFrame(rows)
 
 
-def print_audit(orders, daily, returns=None):
+def print_audit(orders, daily, returns=None, lookbacks=(20, 40, 60, 120), cap=0.35, provider_used=None):
     """Print a compact Txtadel posted-signal audit."""
     print("== Txtadel posted-order audit ==")
     print(f"dates: {orders['date'].nunique() if not orders.empty else 0} | rows: {len(orders)}")
@@ -217,18 +309,32 @@ def print_audit(orders, daily, returns=None):
     if not orders.empty:
         print(orders["ticker"].value_counts().to_string())
     if returns is not None:
-        print("\nCapped inverse-vol weight fit:")
-        print(fit_inverse_vol_weighting(orders, returns).round(4).to_string(index=False))
+        label = f" [{provider_used}]" if provider_used else ""
+        print(f"\nCapped inverse-vol weight fit{label}:")
+        print(fit_inverse_vol_weighting(orders, returns, lookbacks=lookbacks, cap=cap).round(4).to_string(index=False))
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Audit Txtadel-style posted overnight ETF signals.")
     ap.add_argument("pdf", nargs="?", help="Path to Txtadel PDF export")
+    ap.add_argument("--fit-weights", action="store_true",
+                    help="Load ETF return history and fit capped inverse-vol weights.")
+    ap.add_argument("--provider", choices=["auto", "polygon", "yfinance"], default="auto",
+                    help="Daily data provider for --fit-weights. auto prefers Polygon/Massive when configured.")
+    ap.add_argument("--lookbacks", default="20,40,60,120",
+                    help="Comma-separated lookback windows for inverse-vol fit.")
+    ap.add_argument("--cap", type=float, default=0.35,
+                    help="Max single-ticker weight for capped inverse-vol fit.")
     args = ap.parse_args(argv)
     if not args.pdf:
         raise SystemExit("Pass a Txtadel PDF path.")
     orders, daily = parse_txtadel_pdf(Path(args.pdf))
-    print_audit(orders, daily)
+    lookbacks = tuple(int(x.strip()) for x in args.lookbacks.split(",") if x.strip())
+    returns = None
+    provider_used = None
+    if args.fit_weights:
+        returns, provider_used = load_daily_returns_for_orders(orders, lookbacks=lookbacks, provider=args.provider)
+    print_audit(orders, daily, returns=returns, lookbacks=lookbacks, cap=args.cap, provider_used=provider_used)
 
 
 if __name__ == "__main__":

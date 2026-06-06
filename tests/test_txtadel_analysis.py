@@ -59,3 +59,36 @@ def test_inverse_vol_fit_identifies_matching_lookback():
     best = fit.sort_values("mae_pct").iloc[0]
     assert int(best["lookback"]) == 60
     assert best["mae_pct"] < 1e-9
+
+
+def test_required_history_window_and_returns_from_closes():
+    orders, _ = tx.parse_txtadel_text(SAMPLE)
+    start, end = tx.required_history_window(orders, max_lookback=120, buffer_days=80)
+    assert start < "2026-06-04"
+    assert end == "2026-06-06"
+    closes = pd.DataFrame(
+        {"A": [100.0, 102.0, 101.0], "B": [50.0, np.nan, 55.0]},
+        index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-05"]),
+    )
+    r = tx.returns_from_closes(closes)
+    assert list(r.columns) == ["A", "B"]
+    assert abs(r.loc[pd.Timestamp("2026-01-02"), "A"] - 0.02) < 1e-12
+    assert r.index.tz is None
+
+
+def test_load_daily_returns_auto_falls_back_to_yfinance(monkeypatch):
+    orders, _ = tx.parse_txtadel_text(SAMPLE)
+
+    def fail_polygon(*args, **kwargs):
+        raise ValueError("no polygon key")
+
+    def fake_yf(tickers, start, end):
+        idx = pd.bdate_range("2025-01-01", periods=5)
+        return pd.DataFrame({t: np.linspace(100, 104, len(idx)) for t in tickers}, index=idx)
+
+    monkeypatch.setattr(tx, "load_daily_closes_polygon", fail_polygon)
+    monkeypatch.setattr(tx, "load_daily_closes_yfinance", fake_yf)
+    returns, provider = tx.load_daily_returns_for_orders(orders, lookbacks=(2,), provider="auto")
+    assert provider == "yfinance"
+    assert set(orders["ticker"].unique()) <= set(returns.columns)
+    assert not returns.empty

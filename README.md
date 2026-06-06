@@ -18,7 +18,7 @@ Real dollar amounts and API keys do not belong in git. Put real holdings in a lo
 | `forward_paper.py` | Turn a researched signal into next-day paper order plans | `paper_plan.csv`, `paper_orders.csv`, research gate logs | Polygon/Massive; optional Alpaca paper |
 | `paper_broker.py` | Local simulated broker plus Alpaca paper read/submit adapter | fills, orders, positions, account snapshot | Optional Alpaca paper |
 | `broker_benchmark.py` | Measure broker API latency and reliability | p50/p95/max latency, error rate | Alpaca paper |
-| `txtadel_analysis.py` | Audit Txtadel-style posted overnight ETF baskets | parsed orders, posted-vs-recomputed return, capped inverse-vol weight fit | None for PDF parsing; optional market data for further tests |
+| `txtadel_analysis.py` | Audit Txtadel-style posted overnight ETF baskets | parsed orders, posted-vs-recomputed return, capped inverse-vol weight fit | None for PDF parsing; optional Polygon/Massive or yfinance for weight-fit tests |
 | `concentration_analysis.py` | What is the true GOOG/GOOGL look-through exposure? | direct stock + ETF look-through + RSU + shock losses | yfinance for prices/holdings weights; fallback weights available |
 | `factor_xray.py` | What systematic factors drive the whole portfolio? | factor beta/R2, ENB, DR, PC1, risk contribution | yfinance |
 | `vest_diversify_sim.py` | What is the risk tradeoff of holding vs selling vested RSU? | terminal-value percentiles, standard deviation, max drawdown, breakeven drift | yfinance calibration; fallback values if unavailable |
@@ -294,12 +294,20 @@ Run on a PDF export:
 python txtadel_analysis.py "C:\path\to\Txtadel Online.pdf"
 ```
 
+Add a market-data-backed weight fit:
+
+```bash
+python txtadel_analysis.py "C:\path\to\Txtadel Online.pdf" --fit-weights --provider auto --lookbacks 20,40,60,120 --cap 0.35
+```
+
+`--provider auto` tries Polygon/Massive first when `POLYGON_API_KEY` is configured, then falls back to yfinance. The fit tests whether posted weights resemble capped inverse-vol or risk-parity weights over the requested lookbacks. Read `mae_pct` and `rmse_pct` as average weight error in percentage points; lower is better. Read `corr` as directional similarity; higher is better.
+
 It reports:
 
 - parsed `date, ticker, weight, buy_close, sell_open, gain`
 - daily posted total return vs recomputed weighted return
 - ticker frequency and concentration
-- optional capped inverse-vol/risk-parity weight fit when you pass a return panel from Python
+- optional capped inverse-vol/risk-parity weight fit from downloaded daily closes
 
 Useful Python entry points:
 
@@ -308,10 +316,11 @@ import txtadel_analysis as tx
 
 orders, daily = tx.parse_txtadel_pdf("Txtadel Online.pdf")
 tx.compare_posted_vs_recomputed(orders, daily)
+returns, provider = tx.load_daily_returns_for_orders(orders, provider="auto")
 tx.fit_inverse_vol_weighting(orders, returns, lookbacks=(20, 40, 60, 120), cap=0.35)
 ```
 
-The first PDF audit parsed 10 dates and 50 rows. The nine completed daily totals recomputed to within a few thousandths of a percent, which confirms the posted return arithmetic. It does not prove the hidden selection rule.
+The first PDF audit parsed 10 dates and 50 rows. The nine completed daily totals recomputed to within a few thousandths of a percent, which confirms the posted return arithmetic. The capped inverse-vol fit was only partial: 120-day lookback was best at about `mae_pct=5.24`, `rmse_pct=6.42`, and `corr=0.63`. That means inverse-vol/risk-parity explains some structure in the weights but is not enough to prove the hidden selection rule.
 
 ## B. Personal Risk X-ray
 
