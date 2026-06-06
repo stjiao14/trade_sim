@@ -18,6 +18,7 @@ Real dollar amounts and API keys do not belong in git. Put real holdings in a lo
 | `forward_paper.py` | Turn a researched signal into next-day paper order plans | `paper_plan.csv`, `paper_orders.csv`, research gate logs | Polygon/Massive; optional Alpaca paper |
 | `paper_broker.py` | Local simulated broker plus Alpaca paper read/submit adapter | fills, orders, positions, account snapshot | Optional Alpaca paper |
 | `broker_benchmark.py` | Measure broker API latency and reliability | p50/p95/max latency, error rate | Alpaca paper |
+| `txtadel_analysis.py` | Audit Txtadel-style posted overnight ETF baskets | parsed orders, posted-vs-recomputed return, capped inverse-vol weight fit | None for PDF parsing; optional market data for further tests |
 | `concentration_analysis.py` | What is the true GOOG/GOOGL look-through exposure? | direct stock + ETF look-through + RSU + shock losses | yfinance for prices/holdings weights; fallback weights available |
 | `factor_xray.py` | What systematic factors drive the whole portfolio? | factor beta/R2, ENB, DR, PC1, risk contribution | yfinance |
 | `vest_diversify_sim.py` | What is the risk tradeoff of holding vs selling vested RSU? | terminal-value percentiles, standard deviation, max drawdown, breakeven drift | yfinance calibration; fallback values if unavailable |
@@ -282,6 +283,35 @@ python broker_benchmark.py --broker alpaca-paper --submit-test-order --symbol AA
 ```
 
 For this strategy, throughput is not the bottleneck; p95 latency, error rate, and stable account/orders/fills reconciliation matter more.
+
+### `txtadel_analysis.py`
+
+Txtadel-style posted signals are overnight ETF baskets: buy near the close, sell on the next open, and allocate across roughly five liquid ETFs. The PDF export shows posted orders and returns, but not the full signal-generation rule. This module therefore audits only what is observable.
+
+Run on a PDF export:
+
+```bash
+python txtadel_analysis.py "C:\path\to\Txtadel Online.pdf"
+```
+
+It reports:
+
+- parsed `date, ticker, weight, buy_close, sell_open, gain`
+- daily posted total return vs recomputed weighted return
+- ticker frequency and concentration
+- optional capped inverse-vol/risk-parity weight fit when you pass a return panel from Python
+
+Useful Python entry points:
+
+```python
+import txtadel_analysis as tx
+
+orders, daily = tx.parse_txtadel_pdf("Txtadel Online.pdf")
+tx.compare_posted_vs_recomputed(orders, daily)
+tx.fit_inverse_vol_weighting(orders, returns, lookbacks=(20, 40, 60, 120), cap=0.35)
+```
+
+The first PDF audit parsed 10 dates and 50 rows. The nine completed daily totals recomputed to within a few thousandths of a percent, which confirms the posted return arithmetic. It does not prove the hidden selection rule.
 
 ## B. Personal Risk X-ray
 
