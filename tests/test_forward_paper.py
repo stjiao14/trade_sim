@@ -57,3 +57,33 @@ def test_write_forward_logs(tmp_path):
     out = fp.write_forward_logs(run, tmp_path)
     assert (out / "paper_orders.csv").exists()
     assert (out / "paper_research.csv").exists()
+
+
+class FakeAlpaca:
+    def __init__(self):
+        self.submitted = []
+
+    def submit_order(self, intent):
+        self.submitted.append(intent)
+        return {"id": f"order-{len(self.submitted)}", "symbol": intent.symbol, "status": "accepted"}
+
+
+def test_forward_alpaca_shadow_does_not_submit():
+    lr = bt.keep_full_sessions(bt.to_slot_returns(_bars()))
+    broker = FakeAlpaca()
+    run = fp.run_forward_alpaca(lr, mode="shadow", broker=broker)
+    assert run["executed"] is False
+    assert broker.submitted == []
+    assert len(run["orders"]) == 13
+
+
+def test_forward_alpaca_paper_submits_and_logs_json(tmp_path):
+    lr = bt.keep_full_sessions(bt.to_slot_returns(_bars()))
+    broker = FakeAlpaca()
+    run = fp.run_forward_alpaca(lr, mode="paper", broker=broker)
+    assert run["executed"] is True
+    assert len(broker.submitted) == 13
+    out = fp.write_forward_logs(run, tmp_path)
+    fills = pd.read_csv(out / "paper_fills.csv")
+    assert len(fills) == 13
+    assert set(fills.columns) >= {"id", "symbol", "status"}
