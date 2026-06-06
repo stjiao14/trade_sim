@@ -34,6 +34,22 @@ HOLDINGS_CSV = r"C:\path\to\your_holdings.csv"
 
 `config_local.py` 已被 `.gitignore` 忽略。
 
+### 本地 Web UI 配置
+
+如果不想手动编辑 `config_local.py`,可以启动一个只监听本机的配置页面:
+
+```bash
+python web_ui.py
+```
+
+然后打开:
+
+```text
+http://127.0.0.1:8765
+```
+
+这个页面可以配置 Alpaca paper key、Polygon key、持仓 CSV 路径、paper trading 风控参数。保存后会写入 git-ignored 的 `config_local.py`;页面只显示 `configured/missing` 状态,不会把已保存的 secret 回显出来。环境变量仍然优先于本地配置,所以临时覆盖 key 时可以继续用 `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` / `POLYGON_API_KEY`。
+
 ## Quick Test
 
 ```bash

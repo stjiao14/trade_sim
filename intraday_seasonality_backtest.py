@@ -25,6 +25,14 @@ LOOKBACK    = 30
 COST_RT_BPS = 3.0
 TZ          = "America/New_York"
 
+def _local_config_value(name, default=None):
+    """从 git-ignored config_local.py 兜底读取本机配置。"""
+    try:
+        import config_local as cfg
+        return getattr(cfg, name, default)
+    except Exception:
+        return default
+
 def load_bars(tickers, interval=INTERVAL, period=PERIOD):
     import yfinance as yf
     raw = yf.download(tickers, period=period, interval=interval,
@@ -58,9 +66,9 @@ def _polygon_get(url, api_key, sleep=12.5):
 def load_bars_polygon(tickers, start, end, api_key=None):
     """30m bars from Polygon. start/end = 'YYYY-MM-DD'. Returns the same dict shape as load_bars().
     api_key from arg or env POLYGON_API_KEY. Use ADJUSTED prices. Return tz-aware ET index."""
-    api_key=api_key or os.environ.get("POLYGON_API_KEY")
+    api_key=api_key or os.environ.get("POLYGON_API_KEY") or _local_config_value("POLYGON_API_KEY")
     if not api_key:
-        raise ValueError("Polygon API key required: pass api_key or set POLYGON_API_KEY")
+        raise ValueError("Polygon API key required: pass api_key, set POLYGON_API_KEY, or save config_local.py")
     out={}
     for t in tickers:
         url=(f"https://api.polygon.io/v2/aggs/ticker/{t}/range/30/minute/{start}/{end}"

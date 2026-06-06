@@ -14,6 +14,11 @@ FALLBACK_WEIGHTS = dict(spy_alphabet=0.038, qqq_alphabet=0.050)
 # 可选:本地真实持仓 CSV 路径。真实路径请放 config_local.py,不要提交。
 HOLDINGS_CSV = ""
 
+# 可选:Web UI / CLI 共用的本地 API 配置。真实 key 请放 config_local.py,不要提交。
+ALPACA_API_KEY = ""
+ALPACA_SECRET_KEY = ""
+POLYGON_API_KEY = ""
+
 # RSU 归属后 HOLD vs SELL 分散模拟器用的 dummy 配置。
 # 真实数字请放 config_local.py 的 VEST_HOLDINGS 里,不要提交。
 VEST_HOLDINGS = dict(

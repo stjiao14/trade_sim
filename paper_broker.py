@@ -19,6 +19,15 @@ import pandas as pd
 PAPER_ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
 
 
+def _local_config_value(name, default=None):
+    """从 git-ignored config_local.py 兜底读取本机配置。"""
+    try:
+        import config_local as cfg
+        return getattr(cfg, name, default)
+    except Exception:
+        return default
+
+
 @dataclass(frozen=True)
 class OrderIntent:
     """策略想做的订单。qty/notional 二选一,side 为 buy 或 sell。"""
@@ -190,8 +199,8 @@ class AlpacaPaperBroker:
     """Alpaca paper trading adapter。只允许 paper endpoint,避免误连 live。"""
 
     def __init__(self, api_key=None, secret_key=None, base_url=PAPER_ALPACA_BASE_URL):
-        self.api_key = api_key or os.getenv("ALPACA_API_KEY")
-        self.secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
+        self.api_key = api_key or os.getenv("ALPACA_API_KEY") or _local_config_value("ALPACA_API_KEY")
+        self.secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY") or _local_config_value("ALPACA_SECRET_KEY")
         self.base_url = base_url.rstrip("/")
         if self.base_url.endswith("/v2"):
             self.base_url = self.base_url[:-3]
