@@ -170,6 +170,27 @@ print(b.get_fills())
 
 API key 只放环境变量或本地 git-ignored 配置,不要提交。即使是 paper key,泄露后也建议在 Alpaca dashboard 里 regenerate。
 
+### `broker_benchmark.py`
+
+Broker API 延迟/稳定性小基准。默认只测 Alpaca paper 的 read endpoints,不下单:
+
+```bash
+python broker_benchmark.py --broker alpaca-paper --n 10 --out broker_benchmark_logs
+```
+
+输出:
+
+- `broker_latency_raw.csv`:每次调用的 latency/error
+- `broker_latency_summary.csv`:每个 endpoint 的 p50/p95/max/error_rate
+
+只有显式打开时才会发一笔 Alpaca paper 测试单并尝试取消:
+
+```bash
+python broker_benchmark.py --broker alpaca-paper --submit-test-order --symbol AAPL --notional 1
+```
+
+读法:对这个 repo 当前策略,一天最多十几笔订单,吞吐不是瓶颈;更该看 p95 latency、error_rate、以及 account/orders/fills 回读是否稳定。
+
 ## B. 个人风险 X 光机
 
 ### `concentration_analysis.py`
