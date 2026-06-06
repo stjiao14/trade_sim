@@ -19,6 +19,7 @@ Real dollar amounts and API keys do not belong in git. Put real holdings in a lo
 | `paper_broker.py` | Local simulated broker plus Alpaca paper read/submit adapter | fills, orders, positions, account snapshot | Optional Alpaca paper |
 | `broker_benchmark.py` | Measure broker API latency and reliability | p50/p95/max latency, error rate | Alpaca paper |
 | `txtadel_analysis.py` | Audit Txtadel-style posted overnight ETF baskets | parsed orders, posted-vs-recomputed return, capped inverse-vol weight fit | None for PDF parsing; optional Polygon/Massive or yfinance for weight-fit tests |
+| `overnight_basket_backtest.py` | Backtest Txtadel-style close-to-next-open ETF baskets | overnight return metrics, Sharpe, drawdown, benchmark excess | Polygon/Massive or yfinance |
 | `concentration_analysis.py` | What is the true GOOG/GOOGL look-through exposure? | direct stock + ETF look-through + RSU + shock losses | yfinance for prices/holdings weights; fallback weights available |
 | `factor_xray.py` | What systematic factors drive the whole portfolio? | factor beta/R2, ENB, DR, PC1, risk contribution | yfinance |
 | `vest_diversify_sim.py` | What is the risk tradeoff of holding vs selling vested RSU? | terminal-value percentiles, standard deviation, max drawdown, breakeven drift | yfinance calibration; fallback values if unavailable |
@@ -321,6 +322,27 @@ tx.fit_inverse_vol_weighting(orders, returns, lookbacks=(20, 40, 60, 120), cap=0
 ```
 
 The first PDF audit parsed 10 dates and 50 rows. The nine completed daily totals recomputed to within a few thousandths of a percent, which confirms the posted return arithmetic. The capped inverse-vol fit was only partial: 120-day lookback was best at about `mae_pct=5.24`, `rmse_pct=6.42`, and `corr=0.63`. That means inverse-vol/risk-parity explains some structure in the weights but is not enough to prove the hidden selection rule.
+
+### `overnight_basket_backtest.py`
+
+First-pass engine for Txtadel-style close-to-next-open ETF baskets. This is intentionally simpler than the final claimed strategy: it does not infer the hidden selection rule yet. It answers the base mechanical question: if a specified ETF basket is bought at today's close and sold at the next session's open, what are the return, Sharpe, drawdown, and benchmark comparison?
+
+```bash
+python overnight_basket_backtest.py --tickers XLU,GLD,EMXC,XLE,SMH,CGDV,XLI,AVUV --start 2019-01-01 --provider auto --cost-bps 1
+```
+
+`--provider auto` tries Polygon/Massive first when configured, then falls back to yfinance. The current version supports fixed equal-weight or custom-weight basket research from Python. The next layer is to add VIX and macro-proxy gates, then candidate ETF selection rules.
+
+Useful Python entry points:
+
+```python
+import overnight_basket_backtest as ob
+
+bars, provider = ob.load_daily_ohlc(["XLU", "GLD", "SMH"], "2019-01-01", provider="auto")
+overnight = ob.overnight_returns(bars)
+res = ob.backtest_static_basket(overnight, cost_bps=1.0)
+ob.print_report(res, ob.performance_metrics(res))
+```
 
 ## B. Personal Risk X-ray
 
