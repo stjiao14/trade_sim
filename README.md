@@ -8,6 +8,79 @@
 
 真实金额和 API key 不进仓库。真实持仓放本地 CSV 或 git-ignored 的 `config_local.py`;仓库只提交 `config_example.py` 的 dummy 数字。
 
+## 功能地图
+
+这个 repo 不是一个“自动赚钱 bot”,而是一套研究和风控工具。它的主线是:先证伪信号,再做纸面执行;先看真实集中度,再讨论是否分散。
+
+| 模块 | 解决的问题 | 主要输出 | 需要 API |
+|---|---|---|---|
+| `intraday_seasonality_backtest.py` | 原始 intraday seasonality 策略是否真有 edge | 四道 gate、长窗口分季度诊断、long-only vs long/short | yfinance 可跑短窗;Polygon/Massive 跑长窗 |
+| `signal_lab.py` | 任意新信号是否经得起同一套反证关卡 | `PASS/FAIL`、失败原因、随机地板、regime/集中度/CI | 不需要,只要你给 panel |
+| `forward_paper.py` | 把研究信号变成下一交易日 paper 订单计划 | `paper_plan.csv`、`paper_orders.csv`、research gate 日志 | Polygon/Massive;可选 Alpaca paper |
+| `paper_broker.py` | 本地撮合或 Alpaca paper 下单/回读 | fills、orders、positions、account snapshot | 可选 Alpaca paper |
+| `broker_benchmark.py` | 比较 broker API 延迟和稳定性 | p50/p95/max latency、error rate | Alpaca paper |
+| `concentration_analysis.py` | GOOGL/GOOG 真穿透敞口是多少 | 直接持股 + ETF look-through + RSU + 情景损失 | yfinance 持仓/价格;也可用 fallback 权重 |
+| `factor_xray.py` | 全账户到底暴露在哪些系统性因子 | factor beta/R²、ENB、DR、PC1、风险贡献 | yfinance |
+| `vest_diversify_sim.py` | RSU 归属后 HOLD vs SELL 的风险分布 | 分位数、标准差、最大回撤、breakeven drift | yfinance 校准;失败时有 fallback |
+| `web_ui.py` | 不手写 `config_local.py`,用浏览器配置 key 和路径 | 本地 git-ignored 配置文件 | 不需要 |
+
+## 典型使用方式
+
+### 1. 证伪一个交易信号
+
+先把历史数据整理成 `DataFrame[date, slot, ticker, ret]`,再写一个 `signal_fn(hist) -> Series`:
+
+```python
+from signal_lab import falsify, print_verdict
+
+def my_signal(hist):
+    return hist.mean()
+
+v = falsify(panel, my_signal)
+print_verdict(v)
+```
+
+只有当扣成本后为正、超过随机地板、不过度集中、不是只靠高波动日、抽掉极端日仍成立、按天 bootstrap CI 下界大于 0 时,它才会 PASS。否则工具会告诉你具体死在哪个 gate。
+
+### 2. 跑 intraday seasonality 长窗口复盘
+
+短窗口可以用 yfinance 直接跑;真正判断 persistence 要用 Polygon/Massive 的 30m 长历史:
+
+```python
+import intraday_seasonality_backtest as bt
+bt.long_window_report_polygon()
+```
+
+当前核心结论:这个 intraday seasonality 策略在 18 个月多 regime 长窗口里没有稳定通过。近期正收益集中在单季度/高波动 regime,并伴随较高单票集中度,更像动量或行情污染,不是可依赖的 standalone seasonality edge。
+
+### 3. 纸面 forward test
+
+研究 gate 先过,再进入 paper。默认 shadow 只写订单计划,不碰 broker:
+
+```bash
+python forward_paper.py --mode shadow --out paper_logs
+```
+
+如果要接 Alpaca paper,先用本地 Web UI 或环境变量配置 key,再显式指定 broker:
+
+```bash
+python forward_paper.py --broker alpaca-paper --mode paper --notional 1000 --require-pass --out paper_logs
+```
+
+`--require-pass` 是保险:研究闸门 FAIL 时只输出诊断,不执行 paper 订单。
+
+### 4. 看个人账户风险
+
+把真实持仓 CSV 路径放进 `config_local.py` 或 Web UI,然后分别跑:
+
+```bash
+python concentration_analysis.py
+python factor_xray.py
+python vest_diversify_sim.py
+```
+
+这三件事合起来回答:你对 GOOGL/科技到底有多少穿透敞口,名义上很多持仓实际约几个独立押注,以及 RSU 归属后继续 HOLD 需要 GOOG 每年多跑赢篮子多少才值得承担集中风险。
+
 ## Setup
 
 ```bash
