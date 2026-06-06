@@ -9,11 +9,11 @@ CFG = dict(goog_price=250., rsu_unvested_usd=566_470., liquid_goog_usd=45_996.,
 
 def test_diversify_reduces_risk_at_equal_mu():
     r = V.simulate(CFG, 0.07, 0.07, sg=0.32, sb=0.16, rho=0.60, seed=0)
-    assert r["sell"].std() < r["hold"].std()                    # 分散降方差
-    assert r["sell_dd"].mean() < r["hold_dd"].mean()            # 分散降回撤
-    assert np.median(r["sell"]) >= np.median(r["hold"]) - 1e-6  # 同 mu 下 SELL 中位不输
+    assert r["sell"].std() < r["hold"].std()                    # Diversification lowers variance.
+    assert r["sell_dd"].mean() < r["hold_dd"].mean()            # Diversification lowers drawdown.
+    assert np.median(r["sell"]) >= np.median(r["hold"]) - 1e-6  # At equal mu, SELL median should not lose.
 
 
 def test_breakeven_drift_is_positive_and_sane():
     e = V.breakeven_drift(CFG, 0.07, 0.32, 0.16, 0.60)
-    assert 0.0 < e < 0.10                                       # 需要正超额,且量级合理
+    assert 0.0 < e < 0.10                                       # Positive and sane magnitude.

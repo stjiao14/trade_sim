@@ -1,6 +1,7 @@
-"""前向 paper runner:拉数据 -> 生成下一交易日 orders -> shadow/paper 执行。
+"""Forward paper runner: load data, build next-day orders, then shadow/paper execute.
 
-默认 shadow,不触碰 live trading。这个模块是研究后的执行沙盒,不是 alpha 证明。
+Default mode is shadow and does not touch live trading. This is an execution
+sandbox after research, not proof of alpha.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from paper_runner import broker_summary, print_broker_report
 
 
 def latest_close_prices(bars):
-    """从 {ticker:bars} 取每个 ticker 最近 Close,供本地 paper 成交估价。"""
+    """Read the latest close for each ticker from {ticker: bars} for local fills."""
     out = {}
     for t, df in bars.items():
         if df.empty:
@@ -27,7 +28,7 @@ def latest_close_prices(bars):
 
 
 def load_polygon_panel(tickers=bt.UNIVERSE, start=None, end=None, api_key=None):
-    """从 Polygon 拉 30m bars,转成完整 regular-session panel。"""
+    """Load Polygon 30m bars and convert them into a full-session panel."""
     if end is None:
         end = pd.Timestamp.now(tz=bt.TZ).date().isoformat()
     if start is None:
@@ -38,7 +39,7 @@ def load_polygon_panel(tickers=bt.UNIVERSE, start=None, end=None, api_key=None):
 
 
 def next_slot_picks(lr, lookback=bt.LOOKBACK):
-    """用最近 lookback 个完整交易日,为下一交易日 13 个 slot 生成 pick 计划。"""
+    """Use the latest lookback full sessions to build the next day's 13-slot plan."""
     piv = bt._pivot(lr)
     dates = sorted(lr["date"].unique())
     if len(dates) < lookback:
@@ -65,7 +66,7 @@ def next_slot_picks(lr, lookback=bt.LOOKBACK):
 
 
 def research_verdict(lr, strict=True, random_seeds=5):
-    """轻量研究闸门。strict=True 时要求更接近 signal_lab 的硬判读。"""
+    """Lightweight research gate. strict=True is closer to signal_lab's hard verdict."""
     m = bt.evaluate(lr, random_seeds=random_seeds)
     gates = dict(
         raw_net_positive=m["raw_net_bps"] > 0,
@@ -80,7 +81,7 @@ def research_verdict(lr, strict=True, random_seeds=5):
 
 
 def intents_from_plan(plan, notional_per_slot=1_000.0):
-    """把 next_slot_picks 输出转成订单意图。"""
+    """Convert next_slot_picks output into order intents."""
     out = []
     for row in plan.itertuples(index=False):
         out.append(OrderIntent(
@@ -93,7 +94,7 @@ def intents_from_plan(plan, notional_per_slot=1_000.0):
 
 
 def default_risk_gate(config=None):
-    """从 dict 创建默认风控。config 可来自 config_local.PAPER_TRADING。"""
+    """Build default risk checks from a dict, usually config_local.PAPER_TRADING."""
     c = config or {}
     limits = RiskLimits(
         max_order_notional=float(c.get("max_order_notional", 5_000.0)),
@@ -108,9 +109,10 @@ def default_risk_gate(config=None):
 
 def run_forward_local(lr, prices, mode="shadow", notional_per_slot=1_000.0,
                       broker=None, risk_gate=None, require_pass=False):
-    """生成下一交易日计划并可选本地 paper 执行。
+    """Build the next-day plan and optionally execute against local paper broker.
 
-    mode='shadow' 只记录意图;mode='paper' 才更新本地 broker。require_pass=True 且研究闸门失败时跳过执行。
+    mode='shadow' records intents only; mode='paper' mutates the local broker.
+    require_pass=True skips execution when the research gate fails.
     """
     plan = next_slot_picks(lr)
     verdict = research_verdict(lr)
@@ -130,7 +132,7 @@ def run_forward_local(lr, prices, mode="shadow", notional_per_slot=1_000.0,
 
 def run_forward_alpaca(lr, mode="shadow", notional_per_slot=1_000.0,
                        broker=None, require_pass=False):
-    """生成下一交易日计划并可选提交到 Alpaca paper。默认 shadow 不发单。"""
+    """Build the next-day plan and optionally submit to Alpaca paper. Shadow sends nothing."""
     plan = next_slot_picks(lr)
     verdict = research_verdict(lr)
     intents = intents_from_plan(plan, notional_per_slot=notional_per_slot)
@@ -148,7 +150,7 @@ def run_forward_alpaca(lr, mode="shadow", notional_per_slot=1_000.0,
 
 
 def write_forward_logs(run, out_dir="paper_logs"):
-    """把 forward run 写成 CSV:orders/fills/plan/summary/research。"""
+    """Write a forward run to CSV: orders, fills, plan, summary, and research."""
     p = Path(out_dir); p.mkdir(parents=True, exist_ok=True)
     run["plan"].to_csv(p / "paper_plan.csv", index=False)
     run["orders"].to_csv(p / "paper_orders.csv", index=False)
@@ -172,7 +174,7 @@ def _paper_config():
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Forward paper runner,默认 shadow 不成交。")
+    ap = argparse.ArgumentParser(description="Forward paper runner. Shadow mode does not fill orders.")
     ap.add_argument("--start")
     ap.add_argument("--end")
     ap.add_argument("--mode", choices=["shadow", "paper"], default="shadow")
@@ -210,7 +212,7 @@ def main(argv=None):
         print_broker_report(run["broker"], prices)
     else:
         print(f"alpaca responses: {len(run['fills'])}")
-    print("\n免责声明:paper forward-test 只是执行/记录沙盒,不构成投资建议,也不替代信号证伪。")
+    print("\nDisclaimer: paper forward-test is only an execution/logging sandbox, not investment advice or a replacement for signal falsification.")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ def test_reproduces_backtest_raw():
     a = L.run(lr, L.seasonality_signal); b = bt.backtest(lr, mode="raw")
     assert len(a) == len(b)
     assert (a["pick"].values == b["pick"].values).all()
-    assert np.abs(a["net"].values - b["net"].values).max() < 1e-12   # 逐笔零差(向后兼容铁律)
+    assert np.abs(a["net"].values - b["net"].values).max() < 1e-12   # Trade-by-trade zero diff for compatibility.
 
 
 def test_verdict_true_signal_passes():
@@ -40,4 +40,4 @@ def test_other_signals_run_through_battery():
     lr = make_panel(42, season=0.001)
     for fn in (L.momentum_signal, L.reversal_signal):
         v = _fast_falsify(lr, fn)
-        assert v["verdict"] in ("PASS", "FAIL") and set(v["gates"])  # 端到端不报错、结构完整
+        assert v["verdict"] in ("PASS", "FAIL") and set(v["gates"])  # End-to-end structure is complete.

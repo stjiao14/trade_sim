@@ -1,13 +1,16 @@
-"""合成对照回归关:锁住 '无edge / 真seasonality / 动量陷阱' 三种判读。
-任何改动后必须全过,否则说明判别逻辑被动坏了。"""
+"""Synthetic regression guardrails for no-edge / true-seasonality / momentum-trap verdicts.
+Any change that breaks these tests likely damaged the discriminator logic."""
 import numpy as np, pandas as pd
 import intraday_seasonality_backtest as bt
 
 N_TICKERS, LOOKBACK, COST_RT_BPS = 9, 30, 3.0
 
 def make_panel(seed, season=0.0, trend=0.0, n=N_TICKERS, days=60):
-    """合成半小时收益面板。season=真·stock×slot edge;trend=每票持续drift。
-    rng 抽取顺序固定 -> 结果确定可复现。"""
+    """Build a synthetic half-hour return panel.
+
+    season=true stock x slot edge; trend=persistent per-ticker drift.
+    Fixed RNG draw order keeps results deterministic.
+    """
     rng = np.random.default_rng(seed)
     tickers = [f"T{i}" for i in range(n)]
     dts = pd.bdate_range("2025-01-02", periods=days, tz="America/New_York")
@@ -29,23 +32,23 @@ def _eval(**kw):
 
 def test_pure_noise_has_no_edge():
     m = _eval(season=0.0, trend=0.0)
-    assert m["season_excess_bps"] < 3.0,  m   # 不是真seasonality(≈选择偏差地板)
-    assert m["raw_net_bps"]      < 0.0,  m    # 扣成本不可交易
-    assert m["concentration_pct"] < 30.0, m   # 无动量集中
+    assert m["season_excess_bps"] < 3.0,  m   # Not true seasonality; near selection-bias floor.
+    assert m["raw_net_bps"]      < 0.0,  m    # Not tradeable after cost.
+    assert m["concentration_pct"] < 30.0, m   # No momentum concentration.
 
 def test_true_seasonality_detected():
     m = _eval(season=0.001, trend=0.0)
-    assert m["season_excess_bps"] > 4.0,  m   # 隔离后远超地板 => 真信号
-    assert m["concentration_pct"] < 30.0, m   # 不同票分散在不同槽
+    assert m["season_excess_bps"] > 4.0,  m   # Isolated signal clears the floor.
+    assert m["concentration_pct"] < 30.0, m   # Picks are distributed across tickers/slots.
 
 def test_trend_trap_is_flagged_as_momentum():
     m = _eval(season=0.0, trend=0.0008)
-    assert m["raw_net_bps"]      > 0.0,  m    # 看起来能赚钱(陷阱)
-    assert m["season_excess_bps"] < 3.0, m    # ...但seasonality是假象
-    assert m["concentration_pct"] > 35.0, m   # 动量污染被亮红灯
+    assert m["raw_net_bps"]      > 0.0,  m    # Looks profitable, which is the trap.
+    assert m["season_excess_bps"] < 3.0, m    # Seasonality is still an illusion.
+    assert m["concentration_pct"] > 35.0, m   # Momentum contamination is flagged.
 
 def make_true_uniform(seed=42, season=0.001, n=9, days=60):
-    """均匀的真 seasonality(非 regime 驱动)。"""
+    """Uniform true seasonality, not regime-driven."""
     rng = np.random.default_rng(seed); tk = [f"T{i}" for i in range(n)]
     dts = pd.bdate_range("2025-01-02", periods=days, tz="America/New_York")
     mu = rng.normal(0, season, (n, 13)); fr = []
@@ -57,7 +60,7 @@ def make_true_uniform(seed=42, season=0.001, n=9, days=60):
     return pd.concat(fr, ignore_index=True)
 
 def make_regime_trap(seed=7, n=9, days=60, n_vol=5):
-    """纯 regime 动量陷阱:每票持续相对强弱(drift)只在少数高波动日兑现;平日纯噪声。"""
+    """Pure regime momentum trap: relative drift pays only on a few high-vol days."""
     rng = np.random.default_rng(seed); tk = [f"T{i}" for i in range(n)]
     dts = pd.bdate_range("2025-01-02", periods=days, tz="America/New_York")
     dr = rng.normal(0, 0.004, n)
@@ -75,10 +78,10 @@ def test_genuine_seasonality_is_regime_robust():
     res = bt.backtest(lr, mode="raw")
     dvd = bt.drop_top_vol_days(res, lr)
     reg = bt.season_excess_by_regime(lr, seeds=8)
-    # 抽掉 top-5 高波动日,edge 仍显著为正(真信号不靠那几天)
+    # Drop top-5 high-vol days; true signal should remain positive/significant.
     mean5, t5, _ = dvd[5]
     assert mean5 > 0 and t5 > 1.0, dvd
-    # 隔离 seasonality 在高、低波动两个 regime 都为正
+    # Isolated seasonality should be positive in both high/low regimes.
     assert reg["high"] > 2.0 and reg["low"] > 2.0, reg
 
 def test_regime_momentum_trap_collapses():
@@ -86,18 +89,18 @@ def test_regime_momentum_trap_collapses():
     res = bt.backtest(lr, mode="raw")
     dvd = bt.drop_top_vol_days(res, lr)
     reg = bt.season_excess_by_regime(lr, seeds=8)
-    # 抽掉高波动日后不再显著为正(edge 靠那几天)
+    # After dropping high-vol days, the edge should no longer be significant.
     _, t5, _ = dvd[5]
     assert t5 < 1.0, dvd
-    # 隔离 seasonality 不是两个 regime 都为真(至少一个 <=地板~1.5/为负)
+    # Isolated seasonality should not be true in both regimes.
     assert not (reg["high"] > 2.0 and reg["low"] > 2.0), reg
 
 def test_attribution_flags_single_name_dominance():
-    # trend trap: 单票应主导 P&L
+    # Trend trap: one ticker should dominate P&L.
     trap = bt.backtest(make_panel(42, trend=0.0008), mode="raw")
     _, _, share_trap = bt.attribution(trap)
     assert share_trap > 70.0, share_trap
-    # 真 seasonality: 更分散,头名不应主导
+    # True seasonality should be more diversified; top ticker should not dominate.
     true = bt.backtest(make_panel(42, season=0.001), mode="raw")
     _, _, share_true = bt.attribution(true)
     assert share_true < 70.0, share_true
@@ -128,9 +131,9 @@ def test_long_short_runs_and_amplifies_genuine_seasonality():
     lr = make_panel(42, season=0.001)
     lo = bt.backtest(lr, mode="raw")
     ls = bt.backtest_ls(lr)
-    assert len(ls) == len(lo), (len(ls), len(lo))          # 每个交易日每槽一笔
-    assert ls["net"].mean() > 0, ls["net"].mean()          # 真信号下中性版为正
-    assert ls["net"].mean() * 1e4 > lo["net"].mean() * 1e4 # 两侧都吃到信号 => 强于long-only
+    assert len(ls) == len(lo), (len(ls), len(lo))          # One trade per day/slot.
+    assert ls["net"].mean() > 0, ls["net"].mean()          # Neutral version is positive under true signal.
+    assert ls["net"].mean() * 1e4 > lo["net"].mean() * 1e4 # Both tails contribute, so LS beats long-only.
 
 if __name__ == "__main__":
     for fn in (test_pure_noise_has_no_edge,

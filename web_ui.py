@@ -1,6 +1,7 @@
-"""本机配置 Web UI:管理 API key、paper 风控和常用路径。
+"""Local Web UI for API keys, paper risk limits, and common paths.
 
-只监听 127.0.0.1;敏感值写入 git-ignored 的 config_local.py,页面不回显 secret。
+The server binds to 127.0.0.1 only. Secrets are written to git-ignored
+config_local.py and are never echoed back into the page.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ DEFAULTS = dict(
 
 
 def _literal_assignments(text):
-    """安全读取 config_local.py 里的字面量赋值。"""
+    """Safely read literal assignments from config_local.py."""
     out = {}
     try:
         tree = ast.parse(text)
@@ -55,7 +56,7 @@ def _literal_assignments(text):
 
 
 def load_config(path=CONFIG_PATH):
-    """读取本地配置,缺省值从 DEFAULTS 补齐。"""
+    """Load local config and fill missing keys from DEFAULTS."""
     cfg = json.loads(json.dumps(DEFAULTS))
     if path.exists():
         vals = _literal_assignments(path.read_text(encoding="utf-8"))
@@ -68,12 +69,12 @@ def load_config(path=CONFIG_PATH):
 
 
 def masked(value):
-    """只返回配置状态,不回显 secret。"""
+    """Return only configured/missing status, never the secret value."""
     return "configured" if value else "missing"
 
 
 def public_status(cfg):
-    """UI 展示用状态。"""
+    """Status payload for UI display."""
     return dict(
         alpaca_key=masked(cfg.get("ALPACA_API_KEY")),
         alpaca_secret=masked(cfg.get("ALPACA_SECRET_KEY")),
@@ -84,7 +85,7 @@ def public_status(cfg):
 
 
 def _csv_snapshot(path, tail=5):
-    """读取 CSV 摘要,monitor 用。只读本地日志,不触发任何交易。"""
+    """Read a CSV summary for the monitor. Local logs only; no trading side effects."""
     info = dict(path=str(path), exists=path.exists(), rows=0, columns=[], tail=[], error="")
     if not path.exists():
         return info
@@ -102,7 +103,7 @@ def _csv_snapshot(path, tail=5):
 
 
 def _file_status(path):
-    """返回日志文件新鲜度。"""
+    """Return log-file freshness metadata."""
     if not path.exists():
         return dict(exists=False, mtime="", age_minutes=None, size=0)
     st = path.stat()
@@ -113,7 +114,11 @@ def _file_status(path):
 
 
 def monitor_data(cfg=None, include_alpaca=False):
-    """汇总当前 paper/forward-test 状态。默认只读本地日志;include_alpaca=True 才读 broker API。"""
+    """Summarize paper/forward-test status.
+
+    By default this only reads local logs. include_alpaca=True enables read-only
+    broker API calls.
+    """
     cfg = cfg or load_config()
     paper = cfg.get("PAPER_TRADING", {})
     log_dir = Path(paper.get("log_dir", "paper_logs"))
@@ -146,7 +151,7 @@ def monitor_data(cfg=None, include_alpaca=False):
 
 
 def _alpaca_monitor_snapshot(cfg):
-    """可选读取 Alpaca paper 状态。只调用 read endpoints,不下单。"""
+    """Optionally read Alpaca paper state. Uses read endpoints only."""
     try:
         from paper_broker import AlpacaPaperBroker
         base = cfg.get("PAPER_TRADING", {}).get("alpaca_base_url", "https://paper-api.alpaca.markets")
@@ -165,7 +170,7 @@ def _managed_block(cfg):
     paper = cfg["PAPER_TRADING"]
     lines = [
         BEGIN,
-        "# 由 web_ui.py 管理。真实 key 只留本机,不要提交。",
+        "# Managed by web_ui.py. Keep real keys local and out of git.",
         f"ALPACA_API_KEY = {cfg.get('ALPACA_API_KEY', '')!r}",
         f"ALPACA_SECRET_KEY = {cfg.get('ALPACA_SECRET_KEY', '')!r}",
         f"POLYGON_API_KEY = {cfg.get('POLYGON_API_KEY', '')!r}",
@@ -189,7 +194,7 @@ def _managed_block(cfg):
 
 
 def save_config(cfg, path=CONFIG_PATH):
-    """替换/追加 managed block,保留其它本地配置。"""
+    """Replace or append the managed block while preserving other local config."""
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     block = _managed_block(cfg)
     if BEGIN in old and END in old:
@@ -209,7 +214,7 @@ def _num(form, key, default=0.0):
 
 
 def config_from_form(form, prior):
-    """HTML form -> config。空 secret 字段表示保留原值。"""
+    """Convert HTML form fields to config. Blank secret fields preserve old values."""
     paper = prior["PAPER_TRADING"].copy()
     for k in ("starting_cash", "max_order_notional", "max_symbol_notional", "max_gross_notional",
               "slippage_bps", "commission_bps"):
@@ -262,9 +267,9 @@ def render_page(message=""):
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>trade_sim local config</title><style>{STYLE}</style></head>
 <body><main>
-<h1>trade_sim 本地配置</h1>
-<p class="hint">只监听 127.0.0.1。保存到 git-ignored 的 <code>config_local.py</code>;secret 不回显,留空表示保留原值。</p>
-<div class="nav"><a href="/">配置</a><a href="/monitor">Monitor Portal</a><a href="/api/status">API status JSON</a></div>
+<h1>trade_sim Local Config</h1>
+<p class="hint">Binds to 127.0.0.1 only. Saves to git-ignored <code>config_local.py</code>; secrets are not echoed back. Leave secret fields blank to keep the current value.</p>
+<div class="nav"><a href="/">Config</a><a href="/monitor">Monitor Portal</a><a href="/api/status">API status JSON</a></div>
 {f'<div class="toast">{esc(message)}</div>' if message else ''}
 <div class="status">
   <span class="pill {'ok' if st['alpaca_key']=='configured' else 'miss'}">Alpaca Key: {st['alpaca_key']}</span>
@@ -274,10 +279,10 @@ def render_page(message=""):
 <form method="post" action="/save">
 <div class="grid">
 <section><h2>API Keys</h2>
-<label>Alpaca API Key</label><input name="ALPACA_API_KEY" type="password" autocomplete="off" placeholder="留空=保留当前值">
-<label>Alpaca Secret Key</label><input name="ALPACA_SECRET_KEY" type="password" autocomplete="off" placeholder="留空=保留当前值">
-<label>Polygon / Massive API Key</label><input name="POLYGON_API_KEY" type="password" autocomplete="off" placeholder="留空=保留当前值">
-<label>持仓 CSV 路径</label><input name="HOLDINGS_CSV" value="{esc(cfg.get('HOLDINGS_CSV',''))}">
+<label>Alpaca API Key</label><input name="ALPACA_API_KEY" type="password" autocomplete="off" placeholder="blank = keep current value">
+<label>Alpaca Secret Key</label><input name="ALPACA_SECRET_KEY" type="password" autocomplete="off" placeholder="blank = keep current value">
+<label>Polygon / Massive API Key</label><input name="POLYGON_API_KEY" type="password" autocomplete="off" placeholder="blank = keep current value">
+<label>Holdings CSV path</label><input name="HOLDINGS_CSV" value="{esc(cfg.get('HOLDINGS_CSV',''))}">
 </section>
 <section><h2>Paper Trading</h2>
 <div class="row"><div><label>Starting cash</label><input name="starting_cash" value="{esc(p.get('starting_cash'))}"></div>
@@ -292,9 +297,9 @@ def render_page(message=""):
 <label><input type="checkbox" name="allow_short" {'checked' if p.get('allow_short') else ''}> Allow short</label>
 </section>
 </div>
-<button type="submit">保存本地配置</button>
+<button type="submit">Save Local Config</button>
 </form>
-<p class="hint">本页面不构成投资建议。配置保存后,CLI 会自动从 <code>config_local.py</code> 兜底读取 key。</p>
+<p class="hint">This page is not investment advice. After saving, CLI tools can fall back to <code>config_local.py</code> for keys.</p>
 </main></body></html>"""
 
 
@@ -305,7 +310,7 @@ def _fmt_age(info):
     return f"{age:.1f} min ago" if age is not None else ""
 
 
-def _render_records(records, empty="暂无记录"):
+def _render_records(records, empty="No records yet"):
     if not records:
         return f"<p class='hint'>{empty}</p>"
     return "<pre>" + html.escape(json.dumps(records, ensure_ascii=False, indent=2, default=str)) + "</pre>"
@@ -329,7 +334,7 @@ def render_monitor(include_alpaca=False):
     )
     status = data["fill_status"] or {}
     alpaca = data.get("alpaca")
-    alpaca_block = "<p class='hint'>未刷新 Alpaca。默认 monitor 只读本地日志;点击上方按钮才调用 paper read endpoints。</p>"
+    alpaca_block = "<p class='hint'>Alpaca has not been refreshed. By default the monitor only reads local logs; use the button above to call paper read endpoints.</p>"
     if alpaca is not None:
         if alpaca.get("ok"):
             acct = alpaca.get("account", {})
@@ -346,8 +351,8 @@ def render_monitor(include_alpaca=False):
 <title>trade_sim monitor</title><style>{STYLE}</style></head>
 <body><main>
 <h1>Monitor Portal</h1>
-<p class="hint">只读监控面板:默认读取本地 <code>{esc(data['log_dir'])}</code> CSV 日志,不会触发下单。</p>
-<div class="nav"><a href="/">配置</a><a href="/monitor">刷新本地日志</a><a href="/monitor?alpaca=1">刷新 Alpaca Snapshot</a><a href="/api/monitor">Monitor JSON</a></div>
+<p class="hint">Read-only monitor: by default it reads local CSV logs under <code>{esc(data['log_dir'])}</code> and never submits orders.</p>
+<div class="nav"><a href="/">Config</a><a href="/monitor">Refresh Local Logs</a><a href="/monitor?alpaca=1">Refresh Alpaca Snapshot</a><a href="/api/monitor">Monitor JSON</a></div>
 <div class="status">
   <span class="pill {'ok' if st['alpaca_key']=='configured' else 'miss'}">Alpaca Key: {st['alpaca_key']}</span>
   <span class="pill {'ok' if st['alpaca_secret']=='configured' else 'miss'}">Alpaca Secret: {st['alpaca_secret']}</span>
@@ -370,7 +375,7 @@ def render_monitor(include_alpaca=False):
 </div>
 <section><h2>Recent Plan</h2>{_render_records(data['csvs']['paper_plan.csv']['tail'])}</section>
 <section><h2>Alpaca Paper Snapshot</h2>{alpaca_block}</section>
-<p class="hint">免责声明:Monitor 只是日志/账户状态视图,不构成投资建议,也不替代信号证伪。</p>
+<p class="hint">Disclaimer: the monitor is only a log/account status view. It is not investment advice and does not replace signal falsification.</p>
 </main></body></html>"""
 
 
@@ -403,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
         form = parse_qs(self.rfile.read(length).decode("utf-8"))
         cfg = config_from_form(form, load_config())
         save_config(cfg)
-        self._send(200, render_page("已保存到 config_local.py"))
+        self._send(200, render_page("Saved to config_local.py"))
 
 
 def run(host="127.0.0.1", port=8765):

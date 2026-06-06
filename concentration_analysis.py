@@ -15,13 +15,13 @@ except ImportError:
 
 
 def fetch_prices(tickers=TICKERS):
-    """最新收盘价。"""
+    """Latest close prices."""
     px = yf.download(tickers, period="5d", interval="1d", progress=False)["Close"].iloc[-1]
     return {t: float(px[t]) for t in tickers}
 
 
 def fetch_alphabet_weight(etf, fallback):
-    """ETF 内 GOOGL+GOOG 合计权重。优先 yfinance funds_data,失败用兜底并告警。"""
+    """Alphabet weight inside an ETF, GOOGL+GOOG combined. Prefer yfinance, fallback loudly."""
     try:
         th = yf.Ticker(etf).funds_data.top_holdings   # DataFrame index=symbol, col 'Holding Percent'
         w = float(th.loc[th.index.isin(["GOOGL", "GOOG"]), "Holding Percent"].sum())
@@ -29,7 +29,7 @@ def fetch_alphabet_weight(etf, fallback):
             return w, "fetched"
     except Exception:
         pass
-    return float(fallback), "FALLBACK(请手动核对!)"
+    return float(fallback), "FALLBACK(please verify manually)"
 
 
 def _num(x):
@@ -48,12 +48,12 @@ def _name(row):
 
 
 def load_holdings_from_csv(path, px):
-    """从持仓 CSV 直接生成脚本所需 HOLDINGS。真实金额只留在本地 CSV,不写入代码。"""
+    """Build the HOLDINGS dict from a local holdings CSV. Real dollars stay local."""
     df = pd.read_csv(path)
     required = {"ticker_symbol", "name", "subtype", "institution_value"}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"CSV 缺少必要列: {sorted(missing)}")
+        raise ValueError(f"CSV missing required columns: {sorted(missing)}")
 
     H = dict(googl_shares=0.0, rsu_unvested_shares=0.0,
              spy_usd=0.0, qqq_usd=0.0, tqqq_usd=0.0)
@@ -72,14 +72,14 @@ def load_holdings_from_csv(path, px):
         if not is_rsu:
             liquid_total += val
 
-        # GOOG/GOOGL 统一按美元价值折算成 GOOGL 等价股数,避免 A/C 股价格小差异污染敞口。
+        # Convert GOOG/GOOGL dollar value into GOOGL-equivalent shares to avoid A/C share price noise.
         if tk in {"GOOGL", "GOOG"}:
             if is_rsu:
                 H["rsu_unvested_shares"] += val / px["GOOGL"]
-                notes.append(f"RSU: {tk} {val:,.0f} USD -> GOOGL 等价")
+                notes.append(f"RSU: {tk} {val:,.0f} USD -> GOOGL equivalent")
             else:
                 H["googl_shares"] += val / px["GOOGL"]
-                notes.append(f"直接 Alphabet: {tk} {val:,.0f} USD -> GOOGL 等价")
+                notes.append(f"Direct Alphabet: {tk} {val:,.0f} USD -> GOOGL equivalent")
             continue
 
         if tk == "SPY" or "500 Index" in nm:
@@ -101,23 +101,23 @@ def compute_lookthrough(H, px, w_spy, w_qqq):
     rsu         = H["rsu_unvested_shares"] * px["GOOGL"]
     spy_lt  = H["spy_usd"]  * w_spy
     qqq_lt  = H["qqq_usd"]  * w_qqq
-    tqqq_lt = H["tqqq_usd"] * w_qqq * 3          # TQQQ 3x 名义敞口(路径衰减是另一个分析)
-    rows = [("GOOGL 股票", googl_stock, googl_stock),
+    tqqq_lt = H["tqqq_usd"] * w_qqq * 3          # TQQQ 3x notional exposure; path decay is separate.
+    rows = [("GOOGL stock", googl_stock, googl_stock),
             ("SPY look-through",  H["spy_usd"],  spy_lt),
             ("QQQ look-through",  H["qqq_usd"],  qqq_lt),
-            ("TQQQ look-through(3x名义)", H["tqqq_usd"], tqqq_lt)]
+            ("TQQQ look-through(3x notional)", H["tqqq_usd"], tqqq_lt)]
     liquid_googl = googl_stock + spy_lt + qqq_lt + tqqq_lt
     liquid_nw    = H.get("total_liquid_usd", googl_stock + H["spy_usd"] + H["qqq_usd"] + H["tqqq_usd"])
     return rows, liquid_googl, liquid_nw, rsu
 
 
 def corr_and_beta(H, px, lookback_days=750):
-    """近 ~3 年日收益:GOOGL/SPY/QQQ/TQQQ sleeve 对 GOOGL 的 beta 与 R²。"""
+    """Estimate beta/R2 of the GOOGL/SPY/QQQ/TQQQ sleeve to GOOGL from daily returns."""
     hist = yf.download(TICKERS, period=f"{lookback_days}d", interval="1d", progress=False)["Close"]
     R = hist.pct_change().dropna()
     usd = np.array([H["googl_shares"]*px["GOOGL"], H["spy_usd"], H["qqq_usd"], H["tqqq_usd"]], float)
     if usd.sum() <= 0:
-        raise ValueError("流动持仓为 0,无法计算组合 beta/R²")
+        raise ValueError("liquid holdings are zero; cannot compute portfolio beta/R2")
     wts = usd / usd.sum()
     port = R[TICKERS].values @ wts
     g = R["GOOGL"].values
@@ -148,71 +148,71 @@ def _csv_path_from_config():
 
 def print_report(csv_path=None):
     csv_path = csv_path or _csv_path_from_config()
-    print("=== 1) 价格与 ETF 内 Alphabet 权重 ===")
+    print("=== 1) Prices and Alphabet weights inside ETFs ===")
     px = fetch_prices()
     if csv_path:
         H, notes, _ = load_holdings_from_csv(csv_path, px)
-        print(f"持仓来源: CSV 本地文件 {csv_path}")
+        print(f"Holdings source: local CSV {csv_path}")
     else:
         H = HOLDINGS
         notes = []
         if CONFIG_SOURCE != "config_local.py":
-            print("WARNING: 未找到 config_local.py, 正在使用 config_example.py 的 dummy 数字。")
-            print("         请复制 config_example.py -> config_local.py 并填入真实持仓;config_local.py 已被 git-ignore。")
-        print(f"持仓来源: {CONFIG_SOURCE}")
+            print("WARNING: config_local.py not found; using dummy values from config_example.py.")
+            print("         Copy config_example.py -> config_local.py and fill real holdings; config_local.py is git-ignored.")
+        print(f"Holdings source: {CONFIG_SOURCE}")
 
     w_spy, src_spy = fetch_alphabet_weight("SPY", FALLBACK_WEIGHTS["spy_alphabet"])
     w_qqq, src_qqq = fetch_alphabet_weight("QQQ", FALLBACK_WEIGHTS["qqq_alphabet"])
     for t in TICKERS:
         print(f"{t:5s}: {_usd(px[t])}")
-    print(f"SPY Alphabet(GOOGL+GOOG) 权重: {_pct(w_spy)} [{src_spy}]")
-    print(f"QQQ Alphabet(GOOGL+GOOG) 权重: {_pct(w_qqq)} [{src_qqq}]")
+    print(f"SPY Alphabet(GOOGL+GOOG) weight: {_pct(w_spy)} [{src_spy}]")
+    print(f"QQQ Alphabet(GOOGL+GOOG) weight: {_pct(w_qqq)} [{src_qqq}]")
     if "FALLBACK" in src_spy or "FALLBACK" in src_qqq:
-        print("!!! FALLBACK: ETF 权重为手动兜底值,请去发行商持仓页核对后再作结论。")
+        print("!!! FALLBACK: ETF weights are manual fallback values; verify issuer holdings before concluding.")
     if notes:
-        print("\nCSV 映射摘要:")
+        print("\nCSV mapping summary:")
         for n in notes:
             print(f"- {n}")
 
     rows, liquid_googl, liquid_nw, rsu = compute_lookthrough(H, px, w_spy, w_qqq)
-    table = pd.DataFrame(rows, columns=["来源", "市值", "GOOGL等价敞口"])
-    print("\n=== 2) 穿透敞口表 ===")
-    print(table.assign(市值=table["市值"].map(_usd),
-                       GOOGL等价敞口=table["GOOGL等价敞口"].map(_usd)).to_string(index=False))
+    table = pd.DataFrame(rows, columns=["source", "market_value", "googl_equivalent_exposure"])
+    print("\n=== 2) Look-through exposure table ===")
+    print(table.assign(market_value=table["market_value"].map(_usd),
+                       googl_equivalent_exposure=table["googl_equivalent_exposure"].map(_usd)).to_string(index=False))
 
     hc = float(SALARY_USD) * float(HC_YEARS)
     with_rsu = liquid_nw + rsu
     with_hc = with_rsu + hc
-    print("\n=== 3) GOOGL 等价敞口占比 ===")
-    print(f"流动账户(不含 RSU/收入): {_usd(liquid_googl)} / {_usd(liquid_nw)} = {_pct(_safe_div(liquid_googl, liquid_nw))}")
-    print(f"含未归属 RSU:          {_usd(liquid_googl + rsu)} / {_usd(with_rsu)} = {_pct(_safe_div(liquid_googl + rsu, with_rsu))}")
+    print("\n=== 3) GOOGL-equivalent exposure share ===")
+    print(f"Liquid account, ex-RSU/income: {_usd(liquid_googl)} / {_usd(liquid_nw)} = {_pct(_safe_div(liquid_googl, liquid_nw))}")
+    print(f"Including unvested RSU:        {_usd(liquid_googl + rsu)} / {_usd(with_rsu)} = {_pct(_safe_div(liquid_googl + rsu, with_rsu))}")
     if HC_YEARS and SALARY_USD:
-        print(f"含人力资本(示意):      {_usd(liquid_googl + rsu + hc)} / {_usd(with_hc)} = {_pct(_safe_div(liquid_googl + rsu + hc, with_hc))}")
+        print(f"Including human capital:       {_usd(liquid_googl + rsu + hc)} / {_usd(with_hc)} = {_pct(_safe_div(liquid_googl + rsu + hc, with_hc))}")
     else:
-        print("含人力资本(示意):      已关闭(SALARY_USD 或 HC_YEARS 为 0)")
+        print("Including human capital:       disabled (SALARY_USD or HC_YEARS is 0)")
 
-    print("\n=== 4) GOOGL 冲击情景 ===")
+    print("\n=== 4) GOOGL shock scenarios ===")
     for shock in (-0.30, -0.50):
         liquid_loss = liquid_googl * shock
         rsu_loss = (liquid_googl + rsu) * shock
-        print(f"GOOGL {shock:+.0%}: 流动账户损失 {_usd(liquid_loss)} | 含 RSU 损失 {_usd(rsu_loss)}")
-    print("提示:GOOGL 大跌也可能同时打击工作稳定性与未来 RSU 归属,这不是普通股票 beta。")
+        print(f"GOOGL {shock:+.0%}: liquid-account loss {_usd(liquid_loss)} | including-RSU loss {_usd(rsu_loss)}")
+    print("Note: a GOOGL drawdown may also affect job stability and future RSU vesting; this is not ordinary stock beta.")
 
-    print("\n=== 5) GOOGL/SPY/QQQ/TQQQ sleeve 对 GOOGL 的 beta/R² ===")
+    print("\n=== 5) GOOGL/SPY/QQQ/TQQQ sleeve beta/R2 to GOOGL ===")
     try:
         corr, beta, r2 = corr_and_beta(H, px)
         print(corr.round(2).to_string())
-        print(f"\n该 sleeve 对 GOOGL 的 beta: {beta:.2f} | R²: {r2:.2f}")
-        print("读法:这里只覆盖 GOOGL/SPY/QQQ/TQQQ 这条科技/指数 sleeve,不是全账户因子回归;全账户看 factor_xray.py。")
+        print(f"\nSleeve beta to GOOGL: {beta:.2f} | R2: {r2:.2f}")
+        print("Read this as the GOOGL/SPY/QQQ/TQQQ tech/index sleeve only, not a whole-account factor regression; use factor_xray.py for the whole book.")
     except Exception as e:
-        print(f"相关/beta 获取失败: {e}")
+        print(f"Correlation/beta fetch failed: {e}")
 
     print("\nCaveats:")
-    print("- GOOG + GOOGL 合并计算 Alphabet 敞口。")
-    print("- TQQQ 用 3x 名义敞口;路径衰减、日重置、波动损耗另算。")
-    print("- 人力资本一行仅为示意,不是可交易资产估值。")
-    print("- beta/R² 只覆盖 GOOGL/SPY/QQQ/TQQQ sleeve;全组合风险请看 factor_xray.py。")
-    print("- 本脚本不构成投资建议。")
+    print("- GOOG + GOOGL are combined as Alphabet exposure.")
+    print("- TQQQ uses 3x notional exposure; path decay, daily reset, and vol drag are separate.")
+    print("- Human capital is illustrative, not a tradable asset valuation.")
+    print("- beta/R2 only covers the GOOGL/SPY/QQQ/TQQQ sleeve; use factor_xray.py for whole-book risk.")
+    print("- This script is not investment advice.")
 
 
 if __name__=="__main__":

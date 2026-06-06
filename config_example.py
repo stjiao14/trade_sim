@@ -1,37 +1,37 @@
 HOLDINGS = dict(
-    googl_shares=0,            # 直接持有 GOOGL 股数
-    rsu_unvested_shares=0,     # 未归属 RSU 股数(经济敞口)
-    spy_usd=0.0, qqq_usd=0.0, tqqq_usd=0.0,   # 各 ETF 市值(美元)
+    googl_shares=0,            # Direct GOOGL shares
+    rsu_unvested_shares=0,     # Unvested RSU shares, treated as economic exposure
+    spy_usd=0.0, qqq_usd=0.0, tqqq_usd=0.0,   # ETF market values in USD
 )
 
-SALARY_USD = 0.0              # 年薪(税前);设 0 可关掉人力资本那行
-HC_YEARS   = 0                # 计入几年人力资本(示意,例如 5);0 = 不计
+SALARY_USD = 0.0              # Annual pre-tax salary; set 0 to disable human capital
+HC_YEARS   = 0                # Number of years of human capital to include; 0 = disable
 
-# ETF 内 Alphabet(GOOGL+GOOG 合计)权重的手动兜底值(自动抓取失败时用)。
-# 核对来源:QQQ -> Invesco 持仓页;SPY -> SSGA SPDR 持仓页。
+# Manual fallback Alphabet weight inside ETFs, GOOGL+GOOG combined.
+# Check sources: QQQ -> Invesco holdings page; SPY -> SSGA SPDR holdings page.
 FALLBACK_WEIGHTS = dict(spy_alphabet=0.038, qqq_alphabet=0.050)
 
-# 可选:本地真实持仓 CSV 路径。真实路径请放 config_local.py,不要提交。
+# Optional local real-holdings CSV path. Put the real path in config_local.py.
 HOLDINGS_CSV = ""
 
-# 可选:Web UI / CLI 共用的本地 API 配置。真实 key 请放 config_local.py,不要提交。
+# Optional local API config shared by Web UI and CLI. Put real keys in config_local.py.
 ALPACA_API_KEY = ""
 ALPACA_SECRET_KEY = ""
 POLYGON_API_KEY = ""
 
-# RSU 归属后 HOLD vs SELL 分散模拟器用的 dummy 配置。
-# 真实数字请放 config_local.py 的 VEST_HOLDINGS 里,不要提交。
+# Dummy config for the RSU HOLD vs SELL diversification simulator.
+# Put real numbers in config_local.py under VEST_HOLDINGS.
 VEST_HOLDINGS = dict(
-    goog_price=250.0,           # 当前 GOOG/GOOGL 价(仅用于 RSU 股数换算)
-    rsu_unvested_usd=100_000.0, # 未归属 RSU 现值(美元);dummy 示例,非真实金额
-    liquid_goog_usd=20_000.0,   # 流动账户里的 GOOG 等价敞口;dummy 示例
-    liquid_basket_usd=180_000.0,# 流动账户其余(视作分散篮子);dummy 示例
+    goog_price=250.0,           # Current GOOG/GOOGL price, used only to convert RSU value to shares
+    rsu_unvested_usd=100_000.0, # Current value of unvested RSU; dummy example, not real money
+    liquid_goog_usd=20_000.0,   # Liquid-account GOOG-equivalent exposure; dummy example
+    liquid_basket_usd=180_000.0,# Remaining liquid account, treated as diversified basket
 )
 VEST_MONTHS = list(range(3, 49, 3))
 BASKET_PROXY = "VT"
 N_PATHS = 20000
 
-# Paper trading / forward-test dummy 配置。真实 key 用环境变量,不要写进 config。
+# Paper trading / forward-test dummy config. Put real keys in env vars or config_local.py.
 PAPER_TRADING = dict(
     starting_cash=100_000.0,
     max_order_notional=5_000.0,

@@ -7,14 +7,14 @@ import factor_xray as fx
 def _panel(seed, mode):
     rng = np.random.default_rng(seed)
     n = 800
-    if mode == "fake":          # 全是同一因子
+    if mode == "fake":          # All assets load on one common factor.
         F = rng.normal(0, 0.015, n)
         R = pd.DataFrame({"A": 1.0 * F + rng.normal(0, 0.005, n),
                           "B": 0.9 * F + rng.normal(0, 0.004, n),
                           "C": 1.1 * F + rng.normal(0, 0.005, n),
                           "D": 3.0 * F + rng.normal(0, 0.015, n)})
         w = [0.1, 0.45, 0.3, 0.15]
-    else:                       # 互相独立
+    else:                       # Mutually independent assets.
         R = pd.DataFrame({f"A{i}": rng.normal(0, 0.01, n) for i in range(5)})
         w = [0.2] * 5
     return R, w

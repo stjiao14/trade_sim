@@ -1,6 +1,7 @@
-"""纸面交易执行层:本地撮合 + Alpaca paper adapter。
+"""Paper-trading execution layer: local fills plus Alpaca paper adapter.
 
-这里不判断信号真假,只负责把已经通过证伪机的订单意图变成可审计的 paper fills。
+This module does not judge signal quality. It turns already-researched order
+intents into auditable paper fills.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ PAPER_ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
 
 
 def _local_config_value(name, default=None):
-    """从 git-ignored config_local.py 兜底读取本机配置。"""
+    """Read a local fallback value from git-ignored config_local.py."""
     try:
         import config_local as cfg
         return getattr(cfg, name, default)
@@ -30,7 +31,7 @@ def _local_config_value(name, default=None):
 
 @dataclass(frozen=True)
 class OrderIntent:
-    """策略想做的订单。qty/notional 二选一,side 为 buy 或 sell。"""
+    """Order intent from a strategy. Exactly one of qty/notional is required."""
 
     symbol: str
     side: str
@@ -59,7 +60,7 @@ class OrderIntent:
 
 @dataclass(frozen=True)
 class RiskLimits:
-    """最小可用的一组纸面风控限制。"""
+    """Minimal paper risk limits."""
 
     max_order_notional: float = 10_000.0
     max_symbol_notional: float = 25_000.0
@@ -71,7 +72,7 @@ class RiskLimits:
 
 @dataclass(frozen=True)
 class Fill:
-    """订单执行或拒单结果。rejected 时 qty/notional 为 0。"""
+    """Order fill or rejection result. Rejections have zero qty/notional."""
 
     timestamp: str
     symbol: str
@@ -86,13 +87,13 @@ class Fill:
 
 
 class RiskGate:
-    """订单进入 broker 前的硬风控。"""
+    """Hard risk checks before an order reaches the broker."""
 
     def __init__(self, limits: RiskLimits):
         self.limits = limits
 
     def check_order(self, broker, intent: OrderIntent, qty: float, price: float):
-        """返回 (ok, message)。按成交价估算拒单,避免纸面账户也偷偷越界。"""
+        """Return (ok, message), using fill-price estimates to prevent risk drift."""
         symbol = intent.symbol
         notional = abs(qty * price)
         if symbol in {s.upper() for s in self.limits.blocked_symbols}:
@@ -121,7 +122,7 @@ class RiskGate:
 
 
 class LocalPaperBroker:
-    """离线纸面 broker:用给定价格成交,记录 cash/positions/fills/orders。"""
+    """Offline paper broker using provided prices, with cash/positions/fills/orders."""
 
     def __init__(self, cash=100_000.0, price_map=None, slippage_bps=0.0, commission_bps=0.0):
         self.cash = float(cash)
@@ -152,7 +153,7 @@ class LocalPaperBroker:
         return float(self.cash + sum(q * px.get(sym, 0.0) for sym, q in self.positions.items()))
 
     def submit_order(self, intent: OrderIntent, price=None, timestamp=None, risk_gate: RiskGate | None = None):
-        """按当前纸面价格成交。风控拒单会返回 status='rejected',不改账户。"""
+        """Fill at the current paper price. Risk rejections do not mutate account state."""
         ts = timestamp or datetime.now(timezone.utc).isoformat()
         raw_price = self.get_price(intent.symbol, price)
         qty = float(intent.qty if intent.qty is not None else intent.notional / raw_price)
@@ -196,7 +197,7 @@ class LocalPaperBroker:
 
 
 class AlpacaPaperBroker:
-    """Alpaca paper trading adapter。只允许 paper endpoint,避免误连 live。"""
+    """Alpaca paper trading adapter. Only the paper endpoint is allowed."""
 
     def __init__(self, api_key=None, secret_key=None, base_url=PAPER_ALPACA_BASE_URL):
         self.api_key = api_key or os.getenv("ALPACA_API_KEY") or _local_config_value("ALPACA_API_KEY")
@@ -210,7 +211,7 @@ class AlpacaPaperBroker:
             raise ValueError("missing ALPACA_API_KEY / ALPACA_SECRET_KEY")
 
     def _request(self, method, path, body=None, params=None):
-        """Alpaca paper REST 请求。path 传 /v2/...;这里只负责 paper endpoint。"""
+        """Alpaca paper REST request. path should be /v2/...."""
         url = f"{self.base_url}{path}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -234,33 +235,33 @@ class AlpacaPaperBroker:
             raise RuntimeError(f"Alpaca paper request failed: {exc.code} {detail}") from exc
 
     def get_account(self):
-        """读取 paper account cash/equity/buying_power 等。"""
+        """Read paper account cash/equity/buying_power and related fields."""
         return self._request("GET", "/v2/account")
 
     def get_positions(self):
-        """读取 Alpaca paper 当前持仓。"""
+        """Read current Alpaca paper positions."""
         return self._request("GET", "/v2/positions")
 
     def get_orders(self, status="all", limit=100, direction="desc"):
-        """读取 paper orders。默认 all,便于和本地 CSV reconcile。"""
+        """Read paper orders. Defaults to all for CSV reconciliation."""
         return self._request("GET", "/v2/orders",
                              params=dict(status=status, limit=limit, direction=direction))
 
     def get_activities(self, activity_type="FILL", limit=100, direction="desc"):
-        """读取 account activities。activity_type='FILL' 时近似 fills。"""
+        """Read account activities. activity_type='FILL' approximates fills."""
         return self._request("GET", f"/v2/account/activities/{activity_type}",
                              params=dict(limit=limit, direction=direction))
 
     def get_fills(self, limit=100, direction="desc"):
-        """读取成交 activity。"""
+        """Read fill activities."""
         return self.get_activities("FILL", limit=limit, direction=direction)
 
     def cancel_order(self, order_id):
-        """取消单个 paper order。"""
+        """Cancel one paper order."""
         return self._request("DELETE", f"/v2/orders/{order_id}")
 
     def submit_order(self, intent: OrderIntent, time_in_force="day"):
-        """提交到 Alpaca paper API。网络调用只在显式使用 adapter 时发生。"""
+        """Submit to Alpaca paper API. Network calls happen only when this adapter is used."""
         body = {
             "symbol": intent.symbol,
             "side": intent.side,
@@ -276,7 +277,7 @@ class AlpacaPaperBroker:
         return self._request("POST", "/v2/orders", body=body)
 
     def snapshot(self):
-        """一次性读取 account/positions/orders/fills,用于 paper reconcile 报告。"""
+        """Read account/positions/orders/fills for paper reconciliation."""
         return dict(
             account=self.get_account(),
             positions=self.get_positions(),

@@ -1,13 +1,14 @@
-"""把研究信号/回测 pick 转成 paper orders 的小工具。"""
+"""Small helpers that convert research/backtest picks into paper orders."""
 from __future__ import annotations
 
 from paper_broker import LocalPaperBroker, OrderIntent, RiskGate
 
 
 def intents_from_picks(res, notional_per_trade=1_000.0):
-    """把 backtest/signal_lab 的逐槽 pick 转成 long-only buy 意图。
+    """Convert slot-level picks from backtest/signal_lab into long-only buy intents.
 
-    注意:这只是 forward-test 的订单桥,不是可交易性证明;真正下单前仍要过 falsify + 风控。
+    This is only a forward-test order bridge, not proof of tradability. Real
+    execution still needs falsification and risk checks.
     """
     intents = []
     for row in res.itertuples(index=False):
@@ -18,7 +19,7 @@ def intents_from_picks(res, notional_per_trade=1_000.0):
 
 
 def run_intents(broker: LocalPaperBroker, intents, prices=None, risk_gate: RiskGate | None = None):
-    """按给定 prices 依次执行订单,返回成交/拒单列表。"""
+    """Execute orders sequentially with optional prices and return fills/rejections."""
     prices = {k.upper(): float(v) for k, v in (prices or {}).items()}
     out = []
     for intent in intents:
@@ -27,7 +28,7 @@ def run_intents(broker: LocalPaperBroker, intents, prices=None, risk_gate: RiskG
 
 
 def broker_summary(broker: LocalPaperBroker, prices=None):
-    """返回纸面账户摘要,方便测试和 notebook 使用。"""
+    """Return a paper account summary for tests and notebooks."""
     pos = broker.positions_frame(prices)
     gross = float(pos["market_value"].abs().sum()) if not pos.empty else 0.0
     return dict(
@@ -40,16 +41,16 @@ def broker_summary(broker: LocalPaperBroker, prices=None):
 
 
 def print_broker_report(broker: LocalPaperBroker, prices=None):
-    """打印纸面账户快照。"""
+    """Print a paper account snapshot."""
     s = broker_summary(broker, prices)
     print("== Paper account ==")
     print(f"cash {s['cash']:.2f} | equity {s['equity']:.2f} | gross {s['gross_exposure']:.2f}")
     print(f"positions {s['n_positions']} | fills {s['n_fills']}")
     pos = broker.positions_frame(prices)
     if not pos.empty:
-        print("\n持仓:")
+        print("\nPositions:")
         print(pos.round(4).to_string(index=False))
     fills = broker.fills_frame()
     if not fills.empty:
-        print("\n最近成交:")
+        print("\nRecent fills:")
         print(fills.tail(10).to_string(index=False))

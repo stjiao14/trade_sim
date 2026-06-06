@@ -1,6 +1,7 @@
-"""全组合因子 X 光 + 真分散度评分。
+"""Whole-portfolio factor x-ray plus true diversification score.
 
-真实持仓从本地 CSV 读取;不要把真实金额写进代码或提交到仓库。本脚本不构成投资建议。
+Real holdings are read from a local CSV. Do not hardcode or commit real dollar amounts.
+This script is not investment advice.
 """
 import sys
 
@@ -25,13 +26,16 @@ def _add(weights, ticker, usd):
 
 
 def load_full_portfolio(csv_path):
-    """从持仓 CSV 返回 {ticker_for_yf: usd_value}(每个标的独立)。
-    GOOG/GOOGL/RSU 合并到 GOOGL;现金/货币基金记 CASH;无 ticker 行会写入 notes。"""
+    """Return {ticker_for_yf: usd_value} from a holdings CSV.
+
+    GOOG/GOOGL/RSU are merged into GOOGL; cash/money-market rows become CASH;
+    rows without usable tickers are reported in notes.
+    """
     df = pd.read_csv(csv_path)
     required = {"ticker_symbol", "name", "subtype", "institution_value"}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"CSV 缺少必要列: {sorted(missing)}")
+        raise ValueError(f"CSV missing required columns: {sorted(missing)}")
 
     weights = {}
     notes = []
@@ -47,20 +51,20 @@ def load_full_portfolio(csv_path):
         if tk in {"GOOG", "GOOGL"}:
             _add(weights, "GOOGL", val)
             if st == "rsu":
-                notes.append(f"RSU 并入 GOOGL: {val:,.0f} USD")
+                notes.append(f"RSU merged into GOOGL: {val:,.0f} USD")
             continue
 
         if (not tk) and "500 index" in nm_l:
             _add(weights, "SPY", val)
-            notes.append(f"无 ticker 500 index trust 用 SPY 代理: {val:,.0f} USD")
+            notes.append(f"No-ticker 500 index trust proxied by SPY: {val:,.0f} USD")
             continue
 
         if (not tk) and ("ext market" in nm_l or "extended market" in nm_l):
             _add(weights, "VXF", val)
-            notes.append(f"无 ticker extended market index trust 用 VXF 代理: {val:,.0f} USD")
+            notes.append(f"No-ticker extended market index trust proxied by VXF: {val:,.0f} USD")
             continue
 
-        # 现金、money market、sweep、短期储备按零收益 CASH 处理。
+        # Cash, money market, sweep, and short-term reserve rows are zero-return CASH.
         if tk in {"CASH", "USD"} or tk.startswith("CUR:") or any(
             k in nm_l for k in ["cash", "money market", "sweep", "core position"]
         ):
@@ -70,10 +74,10 @@ def load_full_portfolio(csv_path):
         if tk:
             _add(weights, tk, val)
         else:
-            notes.append(f"跳过无 ticker 行: {nm or '(blank name)'} {val:,.0f} USD")
+            notes.append(f"Skipped no-ticker row: {nm or '(blank name)'} {val:,.0f} USD")
 
     if not weights:
-        raise ValueError("CSV 没有可用持仓")
+        raise ValueError("CSV has no usable holdings")
     return weights, notes
 
 
@@ -86,10 +90,10 @@ def _download_close(tickers, lookback_days):
 
 
 def portfolio_returns(weights_usd, lookback_days=750):
-    """下载各标的日收益,按美元权重合成组合收益。CASH 视作 0 收益、0 波动。"""
+    """Download daily returns and build a USD-weighted portfolio return series."""
     tickers = [t for t in weights_usd if t != "CASH"]
     if len(tickers) < 2 and "CASH" not in weights_usd:
-        raise ValueError("需至少 2 个有收益历史的标的")
+        raise ValueError("need at least 2 return-bearing holdings")
     if tickers:
         px = _download_close(tickers, lookback_days)
         R = px.pct_change().dropna(how="all")
@@ -101,7 +105,7 @@ def portfolio_returns(weights_usd, lookback_days=750):
     cols = list(R.columns)
     live_cols = [c for c in cols if c != "CASH"]
     if len(live_cols) < 2:
-        raise ValueError("需至少 2 个有收益历史的标的;CASH 按零波动处理")
+        raise ValueError("need at least 2 return-bearing holdings; CASH is zero-vol")
     w = np.array([weights_usd[c] for c in cols], float)
     w = w / w.sum()
     port = pd.Series(R[cols].values @ w, index=R.index, name="portfolio")
@@ -109,14 +113,14 @@ def portfolio_returns(weights_usd, lookback_days=750):
 
 
 def diversification(R, w):
-    """ENB(独立押注) / DR(分散比) / PC1占比 / 风险贡献表。"""
+    """Compute ENB, diversification ratio, PC1 share, and risk contribution table."""
     w = np.asarray(w, float)
     w = w / w.sum()
     Sig = R.cov().values
     sig = np.sqrt(np.diag(Sig))
     var_p = float(w @ Sig @ w)
     if var_p <= 0:
-        raise ValueError("组合波动为 0,无法计算分散度")
+        raise ValueError("portfolio volatility is zero; cannot compute diversification")
     rc = w * (Sig @ w) / var_p
     C = R.corr().fillna(0.0).values.copy()
     np.fill_diagonal(C, 1.0)
@@ -129,13 +133,13 @@ def diversification(R, w):
 
 
 def factor_xray(port, lookback_days=750, proxies=FACTOR_PROXIES):
-    """用 ETF 代理做 OLS 因子 X 光。代理彼此共线,重读 R2 与主导 beta。"""
+    """Run an ETF-proxy OLS factor x-ray. Proxies are collinear; read R2 and dominant betas."""
     px = _download_close(list(proxies.values()), lookback_days)
     fx = px.pct_change().dropna()
     fx.columns = list(proxies.keys())
     df = pd.concat([port, fx], axis=1, join="inner").dropna()
     if len(df) <= len(proxies) + 2:
-        raise ValueError("收益历史太短,无法做因子回归")
+        raise ValueError("return history is too short for factor regression")
     y = df["portfolio"].values
     X = np.column_stack([np.ones(len(df)), df[list(proxies.keys())].values])
     b, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -157,7 +161,7 @@ def _csv_path_from_config():
 
 
 def print_report(csv_path):
-    """打印因子表、真分散度和风险贡献。"""
+    """Print factor table, diversification score, and risk contribution."""
     weights, notes = load_full_portfolio(csv_path)
     R, w, port = portfolio_returns(weights)
     tab, r2, cond = factor_xray(port)
@@ -165,40 +169,40 @@ def print_report(csv_path):
     usd_total = sum(weights.values())
     usd_pct = {k: weights[k] / usd_total * 100 for k in weights}
 
-    print("== 全组合因子 X 光 ==")
+    print("== Whole-Portfolio Factor X-ray ==")
     if notes:
-        print("读取备注:")
+        print("Load notes:")
         for n in notes:
             print(f"- {n}")
-    print("\n因子回归(beta / t):")
+    print("\nFactor regression (beta / t):")
     print(tab.round(3).to_string())
     print(f"R²: {r2:.2%} | condition number: {cond:.1f}")
     if cond > 30:
-        print("提示:因子代理有共线性;重读 R² 与主导 beta,不要把每个 beta 当正交暴露。")
+        print("Note: factor proxies are collinear; read R2 and dominant betas, not each beta as orthogonal exposure.")
 
-    print("\n== 真分散度 ==")
-    print(f"你名义持有 {div['n_holdings']} 个标的,实际约 {div['ENB']:.1f} 个独立押注; "
-          f"一个共同因子(PC1)解释了 {div['PC1_share']:.1%} 的横截面方差; "
-          f"分散比 DR={div['DR']:.2f}(1.0=无分散收益)。")
+    print("\n== True Diversification ==")
+    print(f"You nominally hold {div['n_holdings']} assets, but only about {div['ENB']:.1f} independent bets; "
+          f"one common factor (PC1) explains {div['PC1_share']:.1%} of cross-sectional variance; "
+          f"diversification ratio DR={div['DR']:.2f} (1.0=no diversification benefit).")
 
-    print("\n风险贡献(组合方差占比):")
+    print("\nRisk contribution (% of portfolio variance):")
     for tk, rc in div["risk_contrib_pct"].items():
-        print(f"{tk:>8s}: 风险 {rc:5.1f}% | 美元 {usd_pct.get(tk, 0.0):5.1f}%")
+        print(f"{tk:>8s}: risk {rc:5.1f}% | dollars {usd_pct.get(tk, 0.0):5.1f}%")
     top = next(iter(div["risk_contrib_pct"]))
-    print(f"\n最大风险源: {top} 占风险 {div['risk_contrib_pct'][top]:.1f}%, "
-          f"但美元占比 {usd_pct.get(top, 0.0):.1f}%。")
-    print("\n注意:CASH 按零波动;RSU 并入 GOOGL;需至少 2 个有收益历史的标的;本脚本不构成投资建议。")
+    print(f"\nLargest risk source: {top} contributes {div['risk_contrib_pct'][top]:.1f}% of risk, "
+          f"but only {usd_pct.get(top, 0.0):.1f}% of dollars.")
+    print("\nNotes: CASH is zero-vol; RSU is merged into GOOGL; need at least 2 return-bearing assets; this script is not investment advice.")
 
 
 def main():
     csv_path = sys.argv[1] if len(sys.argv) > 1 else _csv_path_from_config()
     if not csv_path:
-        print("ERROR: 请传入本地持仓 CSV 路径,或在 config_local.py 设置 HOLDINGS_CSV/CSV_PATH。")
+        print("ERROR: pass a local holdings CSV path or set HOLDINGS_CSV/CSV_PATH in config_local.py.")
         return
     try:
         print_report(csv_path)
     except Exception as exc:
-        print(f"ERROR: factor_xray 失败: {exc}")
+        print(f"ERROR: factor_xray failed: {exc}")
 
 
 if __name__ == "__main__":
