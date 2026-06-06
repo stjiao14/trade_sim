@@ -22,7 +22,7 @@
 | `concentration_analysis.py` | GOOGL/GOOG 真穿透敞口是多少 | 直接持股 + ETF look-through + RSU + 情景损失 | yfinance 持仓/价格;也可用 fallback 权重 |
 | `factor_xray.py` | 全账户到底暴露在哪些系统性因子 | factor beta/R²、ENB、DR、PC1、风险贡献 | yfinance |
 | `vest_diversify_sim.py` | RSU 归属后 HOLD vs SELL 的风险分布 | 分位数、标准差、最大回撤、breakeven drift | yfinance 校准;失败时有 fallback |
-| `web_ui.py` | 不手写 `config_local.py`,用浏览器配置 key 和路径 | 本地 git-ignored 配置文件 | 不需要 |
+| `web_ui.py` | 不手写 `config_local.py`,用浏览器配置 key 和路径,并查看本地 monitor portal | 本地 git-ignored 配置文件、paper logs 状态、可选 Alpaca snapshot | 不需要;可选 Alpaca paper |
 
 ## 典型使用方式
 
@@ -128,6 +128,22 @@ http://127.0.0.1:8765
 ```
 
 这个页面可以配置 Alpaca paper key、Polygon key、持仓 CSV 路径、paper trading 风控参数。保存后会写入 git-ignored 的 `config_local.py`;页面只显示 `configured/missing` 状态,不会把已保存的 secret 回显出来。环境变量仍然优先于本地配置,所以临时覆盖 key 时可以继续用 `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` / `POLYGON_API_KEY`。
+
+同一个本地服务还提供 monitor portal:
+
+```text
+http://127.0.0.1:8765/monitor
+```
+
+Monitor 默认只读本地 `paper_logs` CSV,不会触发下单。它会显示:
+
+- API key 配置状态
+- `paper_plan.csv` / `paper_orders.csv` / `paper_fills.csv` / `paper_summary.csv` / `paper_research.csv` 是否存在和新鲜度
+- 最近 research gate 的 PASS/FAIL、失败原因、raw net / season excess / concentration
+- 最近计划订单和 fill status tail
+- 手动点击 `刷新 Alpaca Snapshot` 后,只调用 Alpaca paper 的 read endpoints,显示 account / recent orders / recent fills
+
+Monitor 是执行状态看板,不是策略证明。策略是否值得跑仍然以 `signal_lab` / `intraday_seasonality_backtest` 的证伪关卡为准。
 
 ## Quick Test
 

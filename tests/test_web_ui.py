@@ -1,6 +1,8 @@
 import json
 from urllib.parse import parse_qs
 
+import pandas as pd
+
 import web_ui as ui
 
 
@@ -61,3 +63,32 @@ def test_save_replaces_only_managed_block(tmp_path):
     assert "VEST_HOLDINGS = {'x': 1}" in text
     assert "POLYGON_API_KEY = 'second'" in text
     assert "POLYGON_API_KEY = 'first'" not in text
+
+
+def test_monitor_reads_local_logs_without_secrets(tmp_path):
+    log_dir = tmp_path / "paper_logs"
+    log_dir.mkdir()
+    pd.DataFrame([dict(research_verdict="FAIL", fail_reasons="concentration_ok",
+                       raw_net_bps=1.2, season_excess_bps=0.4, concentration_pct=42.0)]
+                 ).to_csv(log_dir / "paper_research.csv", index=False)
+    pd.DataFrame([dict(slot=0, pick="AAPL", score_bps=2.5)]
+                 ).to_csv(log_dir / "paper_plan.csv", index=False)
+    pd.DataFrame([dict(symbol="AAPL", side="buy", notional=1000, mode="shadow")]
+                 ).to_csv(log_dir / "paper_orders.csv", index=False)
+    pd.DataFrame([dict(symbol="AAPL", status="filled")]
+                 ).to_csv(log_dir / "paper_fills.csv", index=False)
+    pd.DataFrame([dict(cash=100000)]
+                 ).to_csv(log_dir / "paper_summary.csv", index=False)
+
+    cfg = ui.load_config()
+    cfg["ALPACA_API_KEY"] = "dummy-key"
+    cfg["ALPACA_SECRET_KEY"] = "dummy-secret"
+    cfg["PAPER_TRADING"]["log_dir"] = str(log_dir)
+    m = ui.monitor_data(cfg)
+    html = ui.render_monitor()
+
+    assert m["latest_research"]["research_verdict"] == "FAIL"
+    assert m["latest_order"]["symbol"] == "AAPL"
+    assert m["fill_status"] == {"filled": 1}
+    assert "dummy-secret" not in json.dumps(m)
+    assert "dummy-secret" not in html
