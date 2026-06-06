@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -192,10 +193,62 @@ class AlpacaPaperBroker:
         self.api_key = api_key or os.getenv("ALPACA_API_KEY")
         self.secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
         self.base_url = base_url.rstrip("/")
+        if self.base_url.endswith("/v2"):
+            self.base_url = self.base_url[:-3]
         if self.base_url != PAPER_ALPACA_BASE_URL:
             raise ValueError("AlpacaPaperBroker only supports the paper endpoint")
         if not self.api_key or not self.secret_key:
             raise ValueError("missing ALPACA_API_KEY / ALPACA_SECRET_KEY")
+
+    def _request(self, method, path, body=None, params=None):
+        """Alpaca paper REST 请求。path 传 /v2/...;这里只负责 paper endpoint。"""
+        url = f"{self.base_url}{path}"
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params)}"
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "APCA-API-KEY-ID": self.api_key,
+                "APCA-API-SECRET-KEY": self.secret_key,
+                "Content-Type": "application/json",
+            },
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Alpaca paper request failed: {exc.code} {detail}") from exc
+
+    def get_account(self):
+        """读取 paper account cash/equity/buying_power 等。"""
+        return self._request("GET", "/v2/account")
+
+    def get_positions(self):
+        """读取 Alpaca paper 当前持仓。"""
+        return self._request("GET", "/v2/positions")
+
+    def get_orders(self, status="all", limit=100, direction="desc"):
+        """读取 paper orders。默认 all,便于和本地 CSV reconcile。"""
+        return self._request("GET", "/v2/orders",
+                             params=dict(status=status, limit=limit, direction=direction))
+
+    def get_activities(self, activity_type="FILL", limit=100, direction="desc"):
+        """读取 account activities。activity_type='FILL' 时近似 fills。"""
+        return self._request("GET", f"/v2/account/activities/{activity_type}",
+                             params=dict(limit=limit, direction=direction))
+
+    def get_fills(self, limit=100, direction="desc"):
+        """读取成交 activity。"""
+        return self.get_activities("FILL", limit=limit, direction=direction)
+
+    def cancel_order(self, order_id):
+        """取消单个 paper order。"""
+        return self._request("DELETE", f"/v2/orders/{order_id}")
 
     def submit_order(self, intent: OrderIntent, time_in_force="day"):
         """提交到 Alpaca paper API。网络调用只在显式使用 adapter 时发生。"""
@@ -211,20 +264,13 @@ class AlpacaPaperBroker:
             body["notional"] = str(intent.notional)
         if intent.limit_price is not None:
             body["limit_price"] = str(intent.limit_price)
+        return self._request("POST", "/v2/orders", body=body)
 
-        req = urllib.request.Request(
-            f"{self.base_url}/v2/orders",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "APCA-API-KEY-ID": self.api_key,
-                "APCA-API-SECRET-KEY": self.secret_key,
-                "Content-Type": "application/json",
-            },
-            method="POST",
+    def snapshot(self):
+        """一次性读取 account/positions/orders/fills,用于 paper reconcile 报告。"""
+        return dict(
+            account=self.get_account(),
+            positions=self.get_positions(),
+            orders=self.get_orders(),
+            fills=self.get_fills(),
         )
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Alpaca paper order failed: {exc.code} {detail}") from exc
