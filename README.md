@@ -138,6 +138,14 @@ python forward_paper.py --mode shadow --out paper_logs
 python forward_paper.py --mode paper --notional 1000 --require-pass --out paper_logs
 ```
 
+提交到 Alpaca paper:
+
+```bash
+$env:ALPACA_API_KEY="..."
+$env:ALPACA_SECRET_KEY="..."
+python forward_paper.py --broker alpaca-paper --mode paper --notional 1000 --require-pass --out paper_logs
+```
+
 输出文件:
 
 - `paper_plan.csv`:每个 slot 的 pick 与历史 score
@@ -147,6 +155,20 @@ python forward_paper.py --mode paper --notional 1000 --require-pass --out paper_
 - `paper_research.csv`:研究闸门指标与 PASS/FAIL 原因
 
 `--require-pass` 会在研究闸门 FAIL 时跳过执行,只保留计划和诊断。建议先 shadow 跑几周,确认信号、滑点、集中度和日志流程都稳定后,再考虑连接 broker paper API。
+
+Alpaca paper adapter 也支持读取账户状态:
+
+```python
+from paper_broker import AlpacaPaperBroker
+
+b = AlpacaPaperBroker()
+print(b.get_account())
+print(b.get_positions())
+print(b.get_orders())
+print(b.get_fills())
+```
+
+API key 只放环境变量或本地 git-ignored 配置,不要提交。即使是 paper key,泄露后也建议在 Alpaca dashboard 里 regenerate。
 
 ## B. 个人风险 X 光机
 
