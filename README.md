@@ -124,6 +124,30 @@ print_broker_report(broker)
 
 真实 paper API 目前提供 `AlpacaPaperBroker`,只允许连接 `https://paper-api.alpaca.markets`,避免误连 live。需要环境变量 `ALPACA_API_KEY` / `ALPACA_SECRET_KEY`。Polygon/Massive 适合行情数据;订单模拟和 paper execution 需要 broker API,所以两者角色不同。
 
+### `forward_paper.py`
+
+前向 paper runner。它会拉 Polygon 30m 数据,用最近 lookback 天生成“下一交易日 13 个 slot”的订单计划,并写出 CSV 日志。默认是 shadow 模式,只记录订单意图,不更新 broker 账户。
+
+```bash
+python forward_paper.py --mode shadow --out paper_logs
+```
+
+本地 paper 执行:
+
+```bash
+python forward_paper.py --mode paper --notional 1000 --require-pass --out paper_logs
+```
+
+输出文件:
+
+- `paper_plan.csv`:每个 slot 的 pick 与历史 score
+- `paper_orders.csv`:订单意图
+- `paper_fills.csv`:本地 paper 成交
+- `paper_summary.csv`:账户摘要
+- `paper_research.csv`:研究闸门指标与 PASS/FAIL 原因
+
+`--require-pass` 会在研究闸门 FAIL 时跳过执行,只保留计划和诊断。建议先 shadow 跑几周,确认信号、滑点、集中度和日志流程都稳定后,再考虑连接 broker paper API。
+
 ## B. 个人风险 X 光机
 
 ### `concentration_analysis.py`
