@@ -1,5 +1,6 @@
 import pytest
 
+import paper_broker
 from paper_broker import (
     AlpacaPaperBroker,
     LocalPaperBroker,
@@ -58,3 +59,34 @@ def test_alpaca_adapter_is_paper_only_and_requires_keys(monkeypatch):
         AlpacaPaperBroker(api_key="k", secret_key="s", base_url="https://api.alpaca.markets")
     with pytest.raises(ValueError, match="missing"):
         AlpacaPaperBroker()
+
+
+def test_alpaca_adapter_requests_account_orders_and_fills(monkeypatch):
+    seen = []
+
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self): return b'{"ok": true}'
+
+    def fake_urlopen(req, timeout):
+        seen.append((req.full_url, req.get_method(), req.headers, req.data))
+        return Resp()
+
+    monkeypatch.setattr(paper_broker.urllib.request, "urlopen", fake_urlopen)
+    broker = AlpacaPaperBroker(api_key="paper-key", secret_key="paper-secret",
+                               base_url="https://paper-api.alpaca.markets/v2")
+    assert broker.base_url == "https://paper-api.alpaca.markets"
+    broker.get_account()
+    broker.get_positions()
+    broker.get_orders(status="all", limit=10)
+    broker.get_fills(limit=10)
+    broker.submit_order(OrderIntent("AAPL", "buy", notional=123.0))
+
+    assert seen[0][0].endswith("/v2/account")
+    assert seen[1][0].endswith("/v2/positions")
+    assert "/v2/orders?status=all&limit=10" in seen[2][0]
+    assert "/v2/account/activities/FILL?limit=10" in seen[3][0]
+    assert seen[4][0].endswith("/v2/orders")
+    assert seen[4][1] == "POST"
+    assert b'"symbol": "AAPL"' in seen[4][3]
