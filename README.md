@@ -20,6 +20,7 @@ Real dollar amounts and API keys do not belong in git. Put real holdings in a lo
 | `broker_benchmark.py` | Measure broker API latency and reliability | p50/p95/max latency, error rate | Alpaca paper |
 | `txtadel_analysis.py` | Audit Txtadel-style posted overnight ETF baskets | parsed orders, posted-vs-recomputed return, capped inverse-vol weight fit | None for PDF parsing; optional Polygon/Massive or yfinance for weight-fit tests |
 | `overnight_basket_backtest.py` | Backtest Txtadel-style close-to-next-open ETF baskets | overnight return metrics, Sharpe, drawdown, benchmark excess | Polygon/Massive or yfinance |
+| `overnight_shadow_diary.py` | Daily shadow diary for overnight ETF baskets | plan CSV, settlement CSV, rolling report | Polygon/Massive or yfinance |
 | `concentration_analysis.py` | What is the true GOOG/GOOGL look-through exposure? | direct stock + ETF look-through + RSU + shock losses | yfinance for prices/holdings weights; fallback weights available |
 | `factor_xray.py` | What systematic factors drive the whole portfolio? | factor beta/R2, ENB, DR, PC1, risk contribution | yfinance |
 | `vest_diversify_sim.py` | What is the risk tradeoff of holding vs selling vested RSU? | terminal-value percentiles, standard deviation, max drawdown, breakeven drift | yfinance calibration; fallback values if unavailable |
@@ -425,6 +426,37 @@ python overnight_basket_backtest.py --mode exec-check --broker alpaca-paper
 ```
 
 The current Alpaca paper adapter supports market/limit orders only, not true MOC/MOO auction orders. That is fine for shadow monitoring or a rough paper approximation, but a real close/open auction validation likely needs IBKR or another broker with explicit MOC/MOO support.
+
+### `overnight_shadow_diary.py`
+
+Daily shadow workflow for the overnight ETF candidate. It submits no orders; it creates an auditable diary.
+
+Before the close, generate and append a plan:
+
+```bash
+python overnight_shadow_diary.py plan --rule mean --lookback 40 --top-n 5 --tickers expanded --notional 10000 --out paper_logs
+```
+
+After the next open is available, settle the latest plan:
+
+```bash
+python overnight_shadow_diary.py settle --out paper_logs
+```
+
+Print rolling shadow metrics:
+
+```bash
+python overnight_shadow_diary.py report --out paper_logs
+```
+
+Files:
+
+- `paper_logs/overnight_plans.csv`: one row per planned ETF leg
+- `paper_logs/overnight_settlement_details.csv`: one row per ETF leg after settlement
+- `paper_logs/overnight_settlements.csv`: one row per basket
+- `paper_logs/overnight_report.csv`: rolling 5/20/60 basket metrics
+
+If the next open is not available yet, settlement remains `pending`. This is expected on weekends or before the next market open.
 
 Useful Python entry points:
 
