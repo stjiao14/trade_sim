@@ -147,6 +147,13 @@ The monitor defaults to local CSV logs only and does not submit orders. It shows
 
 The monitor is an execution status page, not proof of strategy quality. Strategy quality is still determined by the falsification gates in `signal_lab.py` and `intraday_seasonality_backtest.py`.
 
+The monitor also reads the overnight shadow diary files when present:
+
+- latest `overnight_plans.csv` basket
+- pending/settled status from `overnight_settlements.csv`
+- rolling 5/20/60 metrics from `overnight_report.csv`
+- warnings when a rolling 20+ trade mean drops below zero or drawdown exceeds 10%
+
 ## Quick Test
 
 ```bash

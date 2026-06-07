@@ -102,6 +102,51 @@ def _csv_snapshot(path, tail=5):
     return info
 
 
+def overnight_alerts(overnight):
+    """Build simple live-vs-expectation alerts from overnight diary CSVs."""
+    alerts = []
+    latest_settle = overnight.get("latest_settlement", {})
+    if latest_settle and str(latest_settle.get("status", "")).lower() == "pending":
+        alerts.append(dict(level="info", message="Latest overnight plan is pending next open."))
+    report_tail = overnight.get("report", {}).get("tail", [])
+    for row in report_tail:
+        try:
+            window = int(float(row.get("window", 0)))
+            mean_bps = float(row.get("mean_bps", 0))
+            max_dd = float(row.get("max_drawdown_pct", 0))
+        except (TypeError, ValueError):
+            continue
+        if window >= 20 and mean_bps < 0:
+            alerts.append(dict(level="warning", message=f"Rolling {window}-trade mean is below zero ({mean_bps:.2f} bps)."))
+        if window >= 20 and max_dd > 10:
+            alerts.append(dict(level="warning", message=f"Rolling {window}-trade drawdown is above 10% ({max_dd:.1f}%)."))
+    return alerts
+
+
+def overnight_monitor_data(log_dir):
+    """Summarize overnight shadow diary logs."""
+    names = ["overnight_plans.csv", "overnight_settlement_details.csv",
+             "overnight_settlements.csv", "overnight_report.csv"]
+    files = {name: _file_status(log_dir / name) for name in names}
+    csvs = {name: _csv_snapshot(log_dir / name) for name in names}
+    plans_tail = csvs["overnight_plans.csv"]["tail"]
+    settlements_tail = csvs["overnight_settlements.csv"]["tail"]
+    report_tail = csvs["overnight_report.csv"]["tail"]
+    latest_plan_id = plans_tail[-1].get("plan_id", "") if plans_tail else ""
+    latest_plan = [r for r in plans_tail if r.get("plan_id") == latest_plan_id] if latest_plan_id else []
+    latest_settlement = settlements_tail[-1] if settlements_tail else {}
+    out = dict(
+        files=files,
+        csvs=csvs,
+        latest_plan_id=latest_plan_id,
+        latest_plan=latest_plan,
+        latest_settlement=latest_settlement,
+        report=csvs["overnight_report.csv"],
+    )
+    out["alerts"] = overnight_alerts(out)
+    return out
+
+
 def _file_status(path):
     """Return log-file freshness metadata."""
     if not path.exists():
@@ -143,6 +188,7 @@ def monitor_data(cfg=None, include_alpaca=False):
         latest_research=latest_research,
         latest_order=latest_order,
         fill_status=fill_status,
+        overnight=overnight_monitor_data(log_dir),
         alpaca=None,
     )
     if include_alpaca:
@@ -333,6 +379,15 @@ def render_monitor(include_alpaca=False):
         for name, info in data["files"].items()
     )
     status = data["fill_status"] or {}
+    overnight = data.get("overnight", {})
+    ov_settle = overnight.get("latest_settlement", {})
+    ov_status = str(ov_settle.get("status", "NO LOG") or "NO LOG")
+    ov_cls = "good" if ov_status == "settled" else ("muted" if ov_status == "pending" else "bad")
+    ov_alerts = overnight.get("alerts", [])
+    ov_alert_html = "".join(
+        f"<p class=\"{'bad' if a.get('level') == 'warning' else 'hint'}\">{esc(a.get('message',''))}</p>"
+        for a in ov_alerts
+    ) or "<p class='hint'>No overnight alerts.</p>"
     alpaca = data.get("alpaca")
     alpaca_block = "<p class='hint'>Alpaca has not been refreshed. By default the monitor only reads local logs; use the button above to call paper read endpoints.</p>"
     if alpaca is not None:
@@ -374,6 +429,17 @@ def render_monitor(include_alpaca=False):
 <section><h2>Fill Status Tail</h2><pre>{esc(json.dumps(status, ensure_ascii=False, indent=2))}</pre></section>
 </div>
 <section><h2>Recent Plan</h2>{_render_records(data['csvs']['paper_plan.csv']['tail'])}</section>
+<div class="grid">
+<section><h2>Overnight Shadow Status</h2>
+<div class="metric {ov_cls}">{esc(ov_status)}</div>
+<p class="hint">latest plan: {esc(overnight.get('latest_plan_id', '') or 'none')}</p>
+<table><tr><th>net bps</th><th>cost bps</th><th>assets</th></tr>
+<tr><td>{esc(ov_settle.get('net_bps', ''))}</td><td>{esc(ov_settle.get('cost_bps', ''))}</td><td>{esc(ov_settle.get('n_assets', ''))}</td></tr></table>
+{ov_alert_html}
+</section>
+<section><h2>Overnight Rolling Report</h2>{_render_records(overnight.get('report', {}).get('tail', []), empty='No overnight report yet')}</section>
+</div>
+<section><h2>Latest Overnight Plan</h2>{_render_records(overnight.get('latest_plan', []), empty='No overnight plan yet')}</section>
 <section><h2>Alpaca Paper Snapshot</h2>{alpaca_block}</section>
 <p class="hint">Disclaimer: the monitor is only a log/account status view. It is not investment advice and does not replace signal falsification.</p>
 </main></body></html>"""

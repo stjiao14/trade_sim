@@ -92,3 +92,39 @@ def test_monitor_reads_local_logs_without_secrets(tmp_path):
     assert m["fill_status"] == {"filled": 1}
     assert "dummy-secret" not in json.dumps(m)
     assert "dummy-secret" not in html
+
+
+def test_monitor_reads_overnight_shadow_diary(tmp_path):
+    log_dir = tmp_path / "paper_logs"
+    log_dir.mkdir()
+    pd.DataFrame([
+        dict(plan_id="2026-06-05_mean_40_5_equal", plan_date="2026-06-05",
+             ticker="XLK", weight=0.2, notional=2000, score=0.01, status="planned"),
+        dict(plan_id="2026-06-05_mean_40_5_equal", plan_date="2026-06-05",
+             ticker="SMH", weight=0.2, notional=2000, score=0.02, status="planned"),
+    ]).to_csv(log_dir / "overnight_plans.csv", index=False)
+    pd.DataFrame([
+        dict(plan_id="2026-06-05_mean_40_5_equal", plan_date="2026-06-05",
+             n_assets=5, gross="", net="", gross_bps="", net_bps="",
+             cost_bps=1.14, status="pending")
+    ]).to_csv(log_dir / "overnight_settlements.csv", index=False)
+    pd.DataFrame([
+        dict(window=20, n=20, mean_bps=-1.5, win_rate_pct=45.0,
+             total_pct=-0.3, max_drawdown_pct=11.0, last_plan_date="2026-06-05")
+    ]).to_csv(log_dir / "overnight_report.csv", index=False)
+
+    cfg = ui.load_config()
+    cfg["PAPER_TRADING"]["log_dir"] = str(log_dir)
+    m = ui.monitor_data(cfg)
+    assert m["overnight"]["latest_plan_id"] == "2026-06-05_mean_40_5_equal"
+    assert m["overnight"]["latest_settlement"]["status"] == "pending"
+    assert any(a["level"] == "warning" for a in m["overnight"]["alerts"])
+
+    prior = ui.load_config
+    try:
+        ui.load_config = lambda: cfg
+        html = ui.render_monitor()
+    finally:
+        ui.load_config = prior
+    assert "Overnight Shadow Status" in html
+    assert "2026-06-05_mean_40_5_equal" in html
