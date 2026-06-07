@@ -92,3 +92,36 @@ def test_load_daily_returns_auto_falls_back_to_yfinance(monkeypatch):
     assert provider == "yfinance"
     assert set(orders["ticker"].unique()) <= set(returns.columns)
     assert not returns.empty
+
+
+def test_candidate_selection_uses_history_before_asof_only():
+    idx = pd.bdate_range("2026-01-01", periods=5)
+    returns = pd.DataFrame({
+        "A": [0.01, 0.01, 0.01, -0.50, -0.50],
+        "B": [0.00, 0.00, 0.00, 0.90, 0.90],
+    }, index=idx)
+    pick = tx.candidate_selection(returns, idx[3], lookback=3, rule="mean", top_n=1)
+    assert pick == ["A"]
+
+
+def test_score_candidate_selection_rules_ranks_matching_rule():
+    idx = pd.bdate_range("2026-01-01", periods=80)
+    returns = pd.DataFrame({
+        "A": np.full(len(idx), 0.003),
+        "B": np.full(len(idx), 0.002),
+        "C": np.full(len(idx), -0.001),
+        "D": np.full(len(idx), -0.002),
+    }, index=idx)
+    orders = pd.DataFrame([
+        dict(date=idx[-2].date(), ticker="A", weight_pct=50.0),
+        dict(date=idx[-2].date(), ticker="B", weight_pct=50.0),
+        dict(date=idx[-1].date(), ticker="A", weight_pct=50.0),
+        dict(date=idx[-1].date(), ticker="B", weight_pct=50.0),
+    ])
+    out = tx.score_candidate_selection_rules(
+        orders, returns, lookbacks=(20,), rules=("mean", "reversal"), top_n=2
+    )
+    best = out.iloc[0]
+    assert best["rule"] == "mean"
+    assert best["avg_overlap"] == 2.0
+    assert best["exact_match_days"] == 2

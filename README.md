@@ -301,7 +301,27 @@ Add a market-data-backed weight fit:
 python txtadel_analysis.py "C:\path\to\Txtadel Online.pdf" --fit-weights --provider auto --lookbacks 20,40,60,120 --cap 0.35
 ```
 
-`--provider auto` tries Polygon/Massive first when `POLYGON_API_KEY` is configured, then falls back to yfinance. The fit tests whether posted weights resemble capped inverse-vol or risk-parity weights over the requested lookbacks. Read `mae_pct` and `rmse_pct` as average weight error in percentage points; lower is better. Read `corr` as directional similarity; higher is better.
+Add simple selection-rule overlap scoring:
+
+```bash
+python txtadel_analysis.py "C:\path\to\Txtadel Online.pdf" --score-selection --provider auto --lookbacks 20,40,60,120 --top-n 5
+```
+
+You can combine both:
+
+```bash
+python txtadel_analysis.py "C:\path\to\Txtadel Online.pdf" --fit-weights --score-selection --provider auto --lookbacks 20,40,60,120 --cap 0.35 --top-n 5
+```
+
+`--provider auto` tries Polygon/Massive first when `POLYGON_API_KEY` is configured, then falls back to yfinance. The weight fit tests whether posted weights resemble capped inverse-vol or risk-parity weights over the requested lookbacks. Read `mae_pct` and `rmse_pct` as average weight error in percentage points; lower is better. Read `corr` as directional similarity; higher is better.
+
+The selection scoring tests transparent top-N rules against the posted ETF basket using only history before each posted date:
+
+- `mean`: trailing average return
+- `tstat`: trailing mean divided by volatility
+- `momentum`: trailing cumulative return
+- `reversal`: negative trailing cumulative return
+- `low_vol`: inverse realized volatility
 
 It reports:
 
@@ -309,6 +329,7 @@ It reports:
 - daily posted total return vs recomputed weighted return
 - ticker frequency and concentration
 - optional capped inverse-vol/risk-parity weight fit from downloaded daily closes
+- optional candidate selection-rule overlap
 
 Useful Python entry points:
 
@@ -319,9 +340,12 @@ orders, daily = tx.parse_txtadel_pdf("Txtadel Online.pdf")
 tx.compare_posted_vs_recomputed(orders, daily)
 returns, provider = tx.load_daily_returns_for_orders(orders, provider="auto")
 tx.fit_inverse_vol_weighting(orders, returns, lookbacks=(20, 40, 60, 120), cap=0.35)
+tx.score_candidate_selection_rules(orders, returns, lookbacks=(20, 40, 60, 120), top_n=5)
 ```
 
-The first PDF audit parsed 10 dates and 50 rows. The nine completed daily totals recomputed to within a few thousandths of a percent, which confirms the posted return arithmetic. The capped inverse-vol fit was only partial: 120-day lookback was best at about `mae_pct=5.24`, `rmse_pct=6.42`, and `corr=0.63`. That means inverse-vol/risk-parity explains some structure in the weights but is not enough to prove the hidden selection rule.
+The first PDF audit parsed 10 dates and 50 rows. The nine completed daily totals recomputed to within a few thousandths of a percent, which confirms the posted return arithmetic. The capped inverse-vol fit was only partial: 120-day lookback was best at about `mae_pct=5.24`, `rmse_pct=6.42`, and `corr=0.63`. That means inverse-vol/risk-parity explains some structure in the weights but is not enough to prove the hidden weighting rule.
+
+The first selection-rule pass found that simple trailing reversal rules were closest but still incomplete: 40-60 day reversal hit about `3.1/5` posted tickers on average, with `0` exact-match days and weak frequency correlation. That suggests the posted basket has some reversal-like structure, but these transparent rules do not fully recover the hidden ETF selection rule.
 
 ### `overnight_basket_backtest.py`
 

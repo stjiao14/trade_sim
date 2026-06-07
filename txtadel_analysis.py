@@ -294,7 +294,107 @@ def fit_inverse_vol_weighting(orders, returns, lookbacks=(20, 40, 60, 120), cap=
     return pd.DataFrame(rows)
 
 
-def print_audit(orders, daily, returns=None, lookbacks=(20, 40, 60, 120), cap=0.35, provider_used=None):
+def _rule_scores(hist, rule):
+    """Score tickers from a trailing return panel. Higher score means more likely selected."""
+    hist = hist.dropna(axis=1, how="all")
+    if hist.empty:
+        return pd.Series(dtype=float)
+    if rule == "mean":
+        return hist.mean()
+    if rule == "tstat":
+        vol = hist.std(ddof=1).replace(0, np.nan)
+        return hist.mean() / vol * np.sqrt(hist.count())
+    if rule == "momentum":
+        return (1.0 + hist.fillna(0.0)).prod() - 1.0
+    if rule == "reversal":
+        return -((1.0 + hist.fillna(0.0)).prod() - 1.0)
+    if rule == "low_vol":
+        return 1.0 / hist.std(ddof=1).replace(0, np.nan)
+    raise ValueError(f"unknown rule: {rule}")
+
+
+def candidate_selection(returns, asof_date, lookback=60, rule="mean", top_n=5, universe=None):
+    """Select candidate tickers using only returns strictly before asof_date."""
+    asof = pd.to_datetime(asof_date)
+    cols = list(universe) if universe is not None else list(returns.columns)
+    cols = [c for c in cols if c in returns.columns]
+    if not cols:
+        return []
+    hist = returns.loc[returns.index < asof, cols].tail(int(lookback))
+    sc = _rule_scores(hist, rule).replace([np.inf, -np.inf], np.nan).dropna()
+    if sc.empty:
+        return []
+    return list(sc.sort_values(ascending=False).head(int(top_n)).index)
+
+
+def score_candidate_selection_rules(orders, returns, lookbacks=(20, 40, 60, 120),
+                                    rules=("mean", "tstat", "momentum", "reversal", "low_vol"),
+                                    top_n=5, universe=None):
+    """Compare simple candidate selection rules with posted Txtadel baskets.
+
+    This is a reverse-engineering aid, not proof of the hidden rule. It reports
+    how many posted tickers each transparent rule would have selected using only
+    history before the posted date.
+    """
+    if orders.empty or returns.empty:
+        return pd.DataFrame(columns=[
+            "rule", "lookback", "n_dates", "avg_overlap", "avg_overlap_pct",
+            "exact_match_days", "freq_corr"
+        ])
+    clean = orders.dropna(subset=["ticker"]).copy()
+    clean["date"] = pd.to_datetime(clean["date"])
+    if universe is None:
+        universe = sorted(set(clean["ticker"]).union(set(returns.columns)))
+    rows = []
+    for rule in rules:
+        for lookback in lookbacks:
+            overlaps = []
+            posted_sizes = []
+            exact = 0
+            pred_counts = pd.Series(dtype=float)
+            posted_counts = pd.Series(dtype=float)
+            n_dates = 0
+            for date, g in clean.groupby("date"):
+                posted = set(g["ticker"].dropna())
+                if not posted:
+                    continue
+                pred = set(candidate_selection(returns, date, lookback=lookback,
+                                               rule=rule, top_n=top_n, universe=universe))
+                if not pred:
+                    continue
+                n_dates += 1
+                hit = len(posted & pred)
+                overlaps.append(hit)
+                posted_sizes.append(len(posted))
+                exact += int(posted == pred)
+                posted_counts = posted_counts.add(pd.Series(1.0, index=list(posted)), fill_value=0.0)
+                pred_counts = pred_counts.add(pd.Series(1.0, index=list(pred)), fill_value=0.0)
+            if not overlaps:
+                rows.append(dict(rule=rule, lookback=int(lookback), n_dates=0,
+                                 avg_overlap=np.nan, avg_overlap_pct=np.nan,
+                                 exact_match_days=0, freq_corr=np.nan))
+                continue
+            all_names = sorted(set(posted_counts.index).union(set(pred_counts.index)))
+            obs = posted_counts.reindex(all_names, fill_value=0.0).values
+            prd = pred_counts.reindex(all_names, fill_value=0.0).values
+            corr = np.corrcoef(obs, prd)[0, 1] if len(all_names) > 1 and np.std(obs) > 0 and np.std(prd) > 0 else np.nan
+            rows.append(dict(
+                rule=rule,
+                lookback=int(lookback),
+                n_dates=int(n_dates),
+                avg_overlap=float(np.mean(overlaps)),
+                avg_overlap_pct=float(np.mean([x / max(sz, 1) for x, sz in zip(overlaps, posted_sizes)]) * 100),
+                exact_match_days=int(exact),
+                freq_corr=float(corr) if np.isfinite(corr) else np.nan,
+            ))
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out = out.sort_values(["avg_overlap", "freq_corr"], ascending=[False, False]).reset_index(drop=True)
+    return out
+
+
+def print_audit(orders, daily, returns=None, lookbacks=(20, 40, 60, 120), cap=0.35,
+                provider_used=None, score_selection=False, top_n=5):
     """Print a compact Txtadel posted-signal audit."""
     print("== Txtadel posted-order audit ==")
     print(f"dates: {orders['date'].nunique() if not orders.empty else 0} | rows: {len(orders)}")
@@ -312,6 +412,10 @@ def print_audit(orders, daily, returns=None, lookbacks=(20, 40, 60, 120), cap=0.
         label = f" [{provider_used}]" if provider_used else ""
         print(f"\nCapped inverse-vol weight fit{label}:")
         print(fit_inverse_vol_weighting(orders, returns, lookbacks=lookbacks, cap=cap).round(4).to_string(index=False))
+        if score_selection:
+            print(f"\nCandidate selection-rule overlap{label}:")
+            sel = score_candidate_selection_rules(orders, returns, lookbacks=lookbacks, top_n=top_n)
+            print(sel.round(4).to_string(index=False))
 
 
 def main(argv=None):
@@ -319,12 +423,16 @@ def main(argv=None):
     ap.add_argument("pdf", nargs="?", help="Path to Txtadel PDF export")
     ap.add_argument("--fit-weights", action="store_true",
                     help="Load ETF return history and fit capped inverse-vol weights.")
+    ap.add_argument("--score-selection", action="store_true",
+                    help="Load ETF return history and score simple top-N selection rules against posted tickers.")
     ap.add_argument("--provider", choices=["auto", "polygon", "yfinance"], default="auto",
                     help="Daily data provider for --fit-weights. auto prefers Polygon/Massive when configured.")
     ap.add_argument("--lookbacks", default="20,40,60,120",
                     help="Comma-separated lookback windows for inverse-vol fit.")
     ap.add_argument("--cap", type=float, default=0.35,
                     help="Max single-ticker weight for capped inverse-vol fit.")
+    ap.add_argument("--top-n", type=int, default=5,
+                    help="Number of tickers selected by each candidate rule.")
     args = ap.parse_args(argv)
     if not args.pdf:
         raise SystemExit("Pass a Txtadel PDF path.")
@@ -332,9 +440,10 @@ def main(argv=None):
     lookbacks = tuple(int(x.strip()) for x in args.lookbacks.split(",") if x.strip())
     returns = None
     provider_used = None
-    if args.fit_weights:
+    if args.fit_weights or args.score_selection:
         returns, provider_used = load_daily_returns_for_orders(orders, lookbacks=lookbacks, provider=args.provider)
-    print_audit(orders, daily, returns=returns, lookbacks=lookbacks, cap=args.cap, provider_used=provider_used)
+    print_audit(orders, daily, returns=returns, lookbacks=lookbacks, cap=args.cap,
+                provider_used=provider_used, score_selection=args.score_selection, top_n=args.top_n)
 
 
 if __name__ == "__main__":
