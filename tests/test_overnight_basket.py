@@ -142,3 +142,36 @@ def test_drop_top_move_days_and_attribution():
     assert pick_share >= 0
     assert np.isfinite(pnl_share)
     assert 0 in drops and 1 in drops
+
+
+def test_nested_walk_forward_factor_regression_shadow_write_and_exec(tmp_path):
+    idx = pd.bdate_range("2024-01-01", periods=90)
+    signal = pd.DataFrame({
+        "A": np.r_[np.full(45, 0.01), np.full(45, 0.002)],
+        "B": np.r_[np.full(45, 0.00), np.full(45, 0.012)],
+        "C": np.full(90, -0.002),
+    }, index=idx)
+    overnight = pd.DataFrame({
+        "A": np.r_[np.full(45, 0.01), np.full(45, 0.001)],
+        "B": np.r_[np.full(45, 0.00), np.full(45, 0.01)],
+        "C": np.full(90, -0.002),
+    }, index=idx)
+    nested = ob.nested_walk_forward(
+        overnight, signal, rules=("mean",), lookbacks=(5,), top_ns=(1,),
+        weightings=("equal",), train_years=1, freq="M", cost_bps=0.0
+    )
+    assert not nested.empty
+    assert {"selected_rule", "oos_mean_bps"} <= set(nested.columns)
+
+    res = ob.backtest_selection_rule(overnight, signal, rule="mean", lookback=5, top_n=1, cost_bps=0.0)
+    factors = pd.DataFrame({"MKT": res.set_index("date")["net"] * 0.5}, index=res["date"])
+    tab, r2, cond = ob.factor_regression(res, factors)
+    assert not tab.empty and 0 <= r2 <= 1 and cond >= 1
+
+    plan = pd.DataFrame([dict(ticker="A", weight=1.0, notional=1000.0)])
+    path = ob.write_shadow_plan(plan, out_dir=tmp_path)
+    assert path.exists()
+
+    info = ob.execution_feasibility("alpaca-paper")
+    assert info["supports_moc"] is False
+    assert info["verdict"] == "APPROX_ONLY"

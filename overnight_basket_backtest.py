@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import urllib.parse
 import urllib.request
 
@@ -575,6 +576,79 @@ def walk_forward_oos_grid(overnight, signal_returns, grid, freq="Y", benchmark=N
     return pd.DataFrame(rows)
 
 
+def nested_walk_forward(overnight, signal_returns, rules=("mean", "momentum", "tstat"),
+                        lookbacks=(20, 40, 60, 120), top_ns=(3, 5, 8),
+                        weightings=("equal", "inv_vol"), train_years=3, freq="Y",
+                        universe=None, cap=0.35, cost_bps=1.0, cost_by_ticker=None,
+                        regime=None, vix_max=30.0, macro_min=-0.20, decision_lag=1,
+                        benchmark=None, select_metric="sharpe"):
+    """Nested walk-forward: choose parameters on prior data, trade the next segment.
+
+    This guards against choosing mean/40 after seeing the full grid. For each OOS
+    period, candidates are ranked only on the preceding train_years of data.
+    """
+    periods = period_splits(overnight.index, freq=freq)
+    labels = list(periods)
+    rows = []
+    for pos, label in enumerate(labels):
+        if pos == 0:
+            continue
+        train_labels = labels[max(0, pos - int(train_years)):pos]
+        train_idx = pd.DatetimeIndex([])
+        for tl in train_labels:
+            train_idx = train_idx.union(periods[tl])
+        test_idx = periods[label]
+        train_ov = overnight.reindex(train_idx).dropna(how="all")
+        test_ov = overnight.reindex(test_idx).dropna(how="all")
+        if train_ov.empty or test_ov.empty:
+            continue
+        grid = summarize_rule_grid(
+            train_ov, signal_returns, rules=rules, lookbacks=lookbacks,
+            top_ns=top_ns, universe=universe, weighting="equal", cap=cap,
+            cost_bps=cost_bps, cost_by_ticker=cost_by_ticker, regime=regime,
+            vix_max=vix_max, macro_min=macro_min, decision_lag=decision_lag,
+            benchmark=benchmark.reindex(train_idx).dropna() if benchmark is not None else None,
+        )
+        # Add non-equal weighting candidates without duplicating grid code.
+        extra = []
+        for weighting in weightings:
+            if weighting == "equal":
+                continue
+            extra.append(summarize_rule_grid(
+                train_ov, signal_returns, rules=rules, lookbacks=lookbacks,
+                top_ns=top_ns, universe=universe, weighting=weighting, cap=cap,
+                cost_bps=cost_bps, cost_by_ticker=cost_by_ticker, regime=regime,
+                vix_max=vix_max, macro_min=macro_min, decision_lag=decision_lag,
+                benchmark=benchmark.reindex(train_idx).dropna() if benchmark is not None else None,
+            ))
+        if extra:
+            grid = pd.concat([grid, *extra], ignore_index=True)
+        grid = grid.replace([np.inf, -np.inf], np.nan).dropna(subset=[select_metric])
+        if grid.empty:
+            continue
+        best = grid.sort_values([select_metric, "mean_bps"], ascending=[False, False]).iloc[0].to_dict()
+        test_res = backtest_selection_rule(
+            test_ov, signal_returns, rule=best["rule"], lookback=int(best["lookback"]),
+            top_n=int(best["top_n"]), universe=universe, weighting=best["weighting"],
+            cap=cap, cost_bps=cost_bps, cost_by_ticker=cost_by_ticker,
+            regime=regime, vix_max=vix_max, macro_min=macro_min, decision_lag=decision_lag,
+        )
+        test_m = performance_metrics(test_res, benchmark=benchmark.reindex(test_idx).dropna() if benchmark is not None else None)
+        rows.append(dict(
+            period=label,
+            train_start=str(train_idx.min().date()),
+            train_end=str(train_idx.max().date()),
+            selected_rule=best["rule"],
+            selected_lookback=int(best["lookback"]),
+            selected_top_n=int(best["top_n"]),
+            selected_weighting=best["weighting"],
+            train_sharpe=float(best["sharpe"]),
+            train_mean_bps=float(best["mean_bps"]),
+            **{f"oos_{k}": v for k, v in test_m.items()},
+        ))
+    return pd.DataFrame(rows)
+
+
 def next_selection_plan(bars, rule="reversal", lookback=60, top_n=5, universe=None,
                         weighting="equal", cap=0.35, notional=1000.0,
                         signal_kind="overnight"):
@@ -600,6 +674,71 @@ def next_selection_plan(bars, rule="reversal", lookback=60, top_n=5, universe=No
                          weighting=weighting, signal_kind=signal_kind,
                          history_end=sig.index.max().date()))
     return pd.DataFrame(rows)
+
+
+def write_shadow_plan(plan, out_dir="paper_logs", name="overnight_plan.csv"):
+    """Write next-session overnight shadow plan to CSV."""
+    p = Path(out_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    path = p / name
+    plan.to_csv(path, index=False)
+    return path
+
+
+def factor_regression(strategy_res, factor_returns):
+    """OLS strategy daily returns against benchmark/factor returns."""
+    if strategy_res.empty or factor_returns.empty:
+        return pd.DataFrame(), np.nan, np.nan
+    y = strategy_res.set_index("date")["net"].rename("strategy")
+    df = pd.concat([y, factor_returns], axis=1, join="inner").dropna()
+    if len(df) <= len(factor_returns.columns) + 2:
+        return pd.DataFrame(), np.nan, np.nan
+    yv = df["strategy"].values
+    X = np.column_stack([np.ones(len(df)), df[factor_returns.columns].values])
+    b, *_ = np.linalg.lstsq(X, yv, rcond=None)
+    resid = yv - X @ b
+    dof = max(len(yv) - X.shape[1], 1)
+    se = np.sqrt(np.diag((resid @ resid) / dof * np.linalg.pinv(X.T @ X)))
+    r2 = 1 - (resid @ resid) / (((yv - yv.mean()) ** 2).sum() + 1e-12)
+    tab = pd.DataFrame({"coef_daily": b, "t": b / (se + 1e-12)},
+                       index=["alpha"] + list(factor_returns.columns))
+    tab["coef_ann_pct"] = tab["coef_daily"] * TRADING_DAYS * 100
+    return tab, float(r2), float(np.linalg.cond(X))
+
+
+def execution_feasibility(broker="alpaca-paper"):
+    """Document execution support for close/open overnight baskets."""
+    broker = broker.lower()
+    if broker == "alpaca-paper":
+        return dict(
+            broker=broker,
+            supports_market=True,
+            supports_limit=True,
+            supports_moc=False,
+            supports_moo=False,
+            verdict="APPROX_ONLY",
+            note=("Current Alpaca paper adapter supports market/limit orders only. "
+                  "It can shadow or approximate close/open execution, but it is not a true MOC/MOO auction test."),
+        )
+    if broker in {"ibkr", "interactive-brokers"}:
+        return dict(
+            broker=broker,
+            supports_market=True,
+            supports_limit=True,
+            supports_moc=True,
+            supports_moo=True,
+            verdict="PREFERRED_FOR_AUCTION_TEST",
+            note="IBKR is the better candidate for real MOC/MOO auction-order paper or live validation.",
+        )
+    return dict(
+        broker=broker,
+        supports_market=None,
+        supports_limit=None,
+        supports_moc=None,
+        supports_moo=None,
+        verdict="UNKNOWN",
+        note="Broker capability not encoded; verify MOC/MOO and paper-trading support before use.",
+    )
 
 
 def to_signal_lab_panel(returns, slot=0):
@@ -730,7 +869,7 @@ def main(argv=None):
     ap.add_argument("--cost-model", choices=["flat", "etf"], default="flat",
                     help="flat uses --cost-bps; etf uses a rough per-ETF round-trip cost table.")
     ap.add_argument("--benchmark", default="SPY", help="Close-to-close benchmark ticker, if loaded.")
-    ap.add_argument("--mode", choices=["static", "rule", "grid", "oos", "shadow-plan", "falsify"], default="static",
+    ap.add_argument("--mode", choices=["static", "rule", "grid", "oos", "nested", "alpha", "shadow-plan", "falsify", "exec-check"], default="static",
                     help="static=fixed basket, rule=one dynamic rule, grid=parameter table, oos=calendar segments, shadow-plan=next basket.")
     ap.add_argument("--rule", choices=["mean", "tstat", "momentum", "reversal", "low_vol"], default="reversal")
     ap.add_argument("--rules", default="reversal,mean,tstat,momentum,low_vol")
@@ -739,11 +878,17 @@ def main(argv=None):
     ap.add_argument("--top-n", type=int, default=5)
     ap.add_argument("--top-ns", default="5")
     ap.add_argument("--weighting", choices=["equal", "score", "inv_vol"], default="equal")
+    ap.add_argument("--weightings", default="equal,inv_vol")
     ap.add_argument("--cap", type=float, default=0.35)
     ap.add_argument("--signal-kind", choices=["overnight", "close"], default="overnight",
                     help="Return panel used for rule scoring.")
     ap.add_argument("--oos-freq", default="Y", help="Calendar split frequency for --mode oos, e.g. Y or Q.")
+    ap.add_argument("--train-years", type=int, default=3)
+    ap.add_argument("--select-metric", default="sharpe")
+    ap.add_argument("--factors", default="SPY,QQQ,XLK,SMH")
     ap.add_argument("--notional", type=float, default=10_000.0, help="Notional for --mode shadow-plan.")
+    ap.add_argument("--out", default="paper_logs")
+    ap.add_argument("--broker", default="alpaca-paper")
     ap.add_argument("--random-seeds", type=int, default=20)
     ap.add_argument("--bootstrap-n", type=int, default=5000)
     ap.add_argument("--gate", choices=["none", "vix-macro"], default="none",
@@ -759,7 +904,16 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     tickers = parse_tickers(args.tickers)
+    if args.mode == "exec-check":
+        print("== execution feasibility ==")
+        info = execution_feasibility(args.broker)
+        for k, v in info.items():
+            print(f"{k}: {v}")
+        return
     extras = [args.benchmark.upper()] if args.benchmark else []
+    factor_tickers = parse_tickers(args.factors)
+    if args.mode == "alpha":
+        extras += factor_tickers
     if args.gate == "vix-macro":
         extras += [args.vix_ticker.upper(), args.risk_on.upper(), args.risk_off.upper()]
     all_tickers = sorted(set(tickers + extras))
@@ -780,7 +934,9 @@ def main(argv=None):
                                    notional=args.notional, signal_kind=args.signal_kind)
         print("== overnight shadow plan ==")
         print(plan.round(6).to_string(index=False) if not plan.empty else "No plan.")
-        print("\nCaveat: this is a shadow plan only; it does not submit broker orders.")
+        path = write_shadow_plan(plan, out_dir=args.out)
+        print(f"\nwrote: {path}")
+        print("Caveat: this is a shadow plan only; it does not submit broker orders.")
         return
     if args.mode == "falsify":
         v = falsify_selection_rule(
@@ -805,6 +961,29 @@ def main(argv=None):
             benchmark=bench,
         )
         _print_grid(grid, f"selection-rule grid [{provider}]")
+        return
+    if args.mode == "nested":
+        nested = nested_walk_forward(
+            overnight, signal_returns, rules=_parse_strings(args.rules),
+            lookbacks=_parse_ints(args.lookbacks), top_ns=_parse_ints(args.top_ns),
+            weightings=_parse_strings(args.weightings),
+            train_years=args.train_years, freq=args.oos_freq, universe=tickers,
+            cap=args.cap, cost_bps=args.cost_bps, cost_by_ticker=cost_by_ticker,
+            regime=reg, vix_max=args.vix_max, macro_min=args.macro_min,
+            decision_lag=args.decision_lag, benchmark=bench,
+            select_metric=args.select_metric,
+        )
+        print(f"\n== nested walk-forward [{provider}] ==")
+        if nested.empty:
+            print("No rows.")
+        else:
+            cols = [c for c in ["period", "train_start", "train_end", "selected_rule",
+                                "selected_lookback", "selected_top_n", "selected_weighting",
+                                "train_sharpe", "train_mean_bps", "oos_n_days",
+                                "oos_mean_bps", "oos_win_rate_pct", "oos_cagr_pct",
+                                "oos_sharpe", "oos_max_drawdown_pct",
+                                "oos_benchmark_excess_pct"] if c in nested.columns]
+            print(nested[cols].round(3).to_string(index=False))
         return
     if args.mode == "oos":
         cfgs = []
@@ -831,6 +1010,26 @@ def main(argv=None):
             decision_lag=args.decision_lag,
         )
         final_res = res
+    elif args.mode == "alpha":
+        res = backtest_selection_rule(
+            overnight, signal_returns, rule=args.rule, lookback=args.lookback,
+            top_n=args.top_n, universe=tickers, weighting=args.weighting,
+            cap=args.cap, cost_bps=args.cost_bps, cost_by_ticker=cost_by_ticker,
+            regime=reg, vix_max=args.vix_max, macro_min=args.macro_min,
+            decision_lag=args.decision_lag,
+        )
+        fr = close_to_close_returns({t: bars[t] for t in factor_tickers if t in bars})
+        tab, r2, cond = factor_regression(res, fr)
+        print(f"== benchmark-relative alpha/beta [{provider}] ==")
+        if tab.empty:
+            print("No regression rows.")
+        else:
+            print(tab.round(4).to_string())
+            print(f"R2: {r2:.3f} | condition: {cond:.1f}")
+            if cond > 30:
+                print("Collinearity warning: read R2 and dominant beta more than individual coefficients.")
+        print("\nCaveat: factors are ETF proxies and are not orthogonal.")
+        return
     else:
         res = backtest_static_basket(overnight, cost_bps=args.cost_bps)
         final_res = res

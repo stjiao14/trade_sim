@@ -394,11 +394,37 @@ python overnight_basket_backtest.py --mode falsify --rule mean --lookback 40 --t
 
 This runs a strategy-specific gauntlet: positive after cost, beats random top-N basket, not dominated by one ETF, not only high-volatility-regime profit, survives dropping the largest overnight move days, and has a positive daily bootstrap lower bound. In the first long-window pass, `mean/40/top5` passed these basket-aware gates, while the PDF-overlap-friendly `reversal/60/top5` failed by losing to random, relying on high-move regimes, and having a bootstrap CI that crossed zero.
 
+Nested walk-forward parameter selection:
+
+```bash
+python overnight_basket_backtest.py --mode nested --rules mean,momentum --lookbacks 40,120 --top-ns 5 --weightings equal --tickers expanded --start 2019-01-01 --gate vix-macro --cost-model etf --oos-freq Y --train-years 3
+```
+
+This chooses parameters only from prior periods, then trades the next OOS segment. The first run shows why this matters: full-sample `mean/40` looks strong, but nested OOS weakens in 2023, 2025, and 2026. That does not kill the idea, but it downgrades it from "obvious edge" to "candidate requiring shadow tracking."
+
+Benchmark-relative alpha/beta check:
+
+```bash
+python overnight_basket_backtest.py --mode alpha --rule mean --lookback 40 --top-n 5 --tickers expanded --start 2019-01-01 --gate vix-macro --cost-model etf --factors SPY,QQQ,XLK,SMH
+```
+
+The first ETF-proxy regression had very low `R2` versus SPY/QQQ/XLK/SMH, so the strategy P&L is not simply explained by close-to-close tech beta. The factor proxies are highly collinear, so treat the individual beta coefficients as diagnostics, not a clean orthogonal factor model.
+
 Next-session shadow plan:
 
 ```bash
-python overnight_basket_backtest.py --mode shadow-plan --rule reversal --lookback 60 --top-n 5 --tickers expanded --notional 10000
+python overnight_basket_backtest.py --mode shadow-plan --rule mean --lookback 40 --top-n 5 --tickers expanded --notional 10000 --out paper_logs
 ```
+
+This writes `paper_logs/overnight_plan.csv` and submits nothing.
+
+Execution feasibility:
+
+```bash
+python overnight_basket_backtest.py --mode exec-check --broker alpaca-paper
+```
+
+The current Alpaca paper adapter supports market/limit orders only, not true MOC/MOO auction orders. That is fine for shadow monitoring or a rough paper approximation, but a real close/open auction validation likely needs IBKR or another broker with explicit MOC/MOO support.
 
 Useful Python entry points:
 
