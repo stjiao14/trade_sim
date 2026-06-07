@@ -327,6 +327,26 @@ def backtest_selection_rule(overnight, signal_returns, rule="reversal", lookback
     return pd.DataFrame(rows)
 
 
+def backtest_random_basket(overnight, top_n=5, universe=None, cost_bps=1.0, cost_by_ticker=None, seed=0):
+    """Random top-N basket baseline with the same daily opportunity set."""
+    rng = np.random.default_rng(seed)
+    cols = [c for c in (universe or list(overnight.columns)) if c in overnight.columns]
+    rows = []
+    for date, row in overnight.sort_index().iterrows():
+        available = [c for c in cols if pd.notna(row.get(c, np.nan))]
+        if len(available) < int(top_n):
+            continue
+        picks = list(rng.choice(available, size=int(top_n), replace=False))
+        w = pd.Series(1.0 / len(picks), index=picks)
+        gross = float((row.loc[picks] * w).sum())
+        cbps = realized_cost_bps(w, cost_bps=cost_bps, cost_by_ticker=cost_by_ticker)
+        rows.append(dict(date=date, gross=gross, net=gross - cbps / 1e4,
+                         n_assets=int(len(w)), picks=",".join(picks),
+                         rule="random", lookback=0, top_n=int(top_n),
+                         weighting="equal", cost_bps=float(cbps)))
+    return pd.DataFrame(rows)
+
+
 def performance_metrics(res, benchmark=None):
     """Compute compact daily-return performance metrics."""
     if res.empty:
@@ -359,6 +379,134 @@ def performance_metrics(res, benchmark=None):
         if not aligned.empty:
             out["benchmark_excess_pct"] = float(((1 + aligned).prod() - (1 + b).prod()) * 100)
     return out
+
+
+def basket_attribution(res):
+    """Approximate pick concentration from comma-separated basket rows."""
+    counts = {}
+    pnl = {}
+    for row in res.itertuples(index=False):
+        picks = str(row.picks).split(",") if hasattr(row, "picks") else []
+        if not picks:
+            continue
+        share = float(row.net) / len(picks)
+        for p in picks:
+            counts[p] = counts.get(p, 0) + 1
+            pnl[p] = pnl.get(p, 0.0) + share
+    if not counts:
+        return pd.DataFrame(), np.nan, np.nan
+    out = pd.DataFrame({
+        "appearances": pd.Series(counts),
+        "net_pnl": pd.Series(pnl),
+    }).sort_values("net_pnl", ascending=False)
+    top_pick_share = float(out["appearances"].max() / out["appearances"].sum() * 100)
+    total = out["net_pnl"].sum()
+    top_pnl_share = float(out["net_pnl"].iloc[0] / total * 100) if total else np.nan
+    return out, top_pick_share, top_pnl_share
+
+
+def daily_bootstrap_ci(res, n=5000, seed=0):
+    """Bootstrap mean daily net return in bps."""
+    if res.empty:
+        return np.nan, np.nan, np.nan
+    d = res.set_index("date")["net"].astype(float).values * 1e4
+    rng = np.random.default_rng(seed)
+    bs = d[rng.integers(0, len(d), size=(int(n), len(d)))].mean(axis=1)
+    return float(d.mean()), float(np.percentile(bs, 2.5)), float(np.percentile(bs, 97.5))
+
+
+def overnight_market_move(overnight):
+    """Daily absolute average ETF overnight move as a market-regime proxy."""
+    return overnight.mean(axis=1).abs()
+
+
+def overnight_regime_split(res, overnight):
+    """Mean net bps on high- vs low-|market overnight move| days."""
+    if res.empty:
+        return np.nan, np.nan
+    mv = overnight_market_move(overnight)
+    med = mv.median()
+    r = res.set_index("date")["net"] * 1e4
+    hi = r[r.index.map(lambda d: mv.get(d, 0) >= med)]
+    lo = r[r.index.map(lambda d: mv.get(d, 0) < med)]
+    return float(hi.mean()), float(lo.mean())
+
+
+def drop_top_move_days(res, overnight, ks=(0, 1, 3, 5)):
+    """Drop top absolute overnight market-move days and recompute mean/t-stat."""
+    daily = res.set_index("date")["net"] * 1e4
+    mv = overnight_market_move(overnight).reindex(daily.index)
+    order = mv.sort_values(ascending=False).index
+    out = {}
+    for k in ks:
+        keep = daily.drop(order[:k], errors="ignore")
+        if len(keep) < 2:
+            out[int(k)] = (float(keep.mean()) if len(keep) else np.nan, np.nan, int(len(keep)))
+            continue
+        t = keep.mean() / (keep.std(ddof=1) / np.sqrt(len(keep)) + 1e-12)
+        out[int(k)] = (float(keep.mean()), float(t), int(len(keep)))
+    return out
+
+
+def falsify_selection_rule(overnight, signal_returns, rule="mean", lookback=40, top_n=5,
+                           universe=None, weighting="equal", cap=0.35, cost_bps=1.0,
+                           cost_by_ticker=None, regime=None, vix_max=30.0,
+                           macro_min=-0.20, decision_lag=1, random_seeds=20,
+                           bootstrap_n=5000, drop_ks=(0, 1, 3, 5)):
+    """Basket-aware falsification gates for an overnight ETF rule."""
+    res = backtest_selection_rule(
+        overnight, signal_returns, rule=rule, lookback=lookback, top_n=top_n,
+        universe=universe, weighting=weighting, cap=cap, cost_bps=cost_bps,
+        cost_by_ticker=cost_by_ticker, regime=regime, vix_max=vix_max,
+        macro_min=macro_min, decision_lag=decision_lag,
+    )
+    m = performance_metrics(res)
+    _, top_pick_share, top_pnl_share = basket_attribution(res)
+    hi, lo = overnight_regime_split(res, overnight)
+    drops = drop_top_move_days(res, overnight, ks=drop_ks)
+    daily_mean, ci_lo, ci_hi = daily_bootstrap_ci(res, n=bootstrap_n)
+    rnd = []
+    for seed in range(int(random_seeds)):
+        rb = backtest_random_basket(
+            overnight.reindex(res["date"] if not res.empty else overnight.index),
+            top_n=top_n, universe=universe, cost_bps=cost_bps,
+            cost_by_ticker=cost_by_ticker, seed=seed,
+        )
+        rnd.append(rb["net"].mean() if not rb.empty else np.nan)
+    random_floor_bps = float(np.nanmean(rnd) * 1e4) if rnd else np.nan
+    excess = float(m["mean_bps"] - random_floor_bps) if np.isfinite(random_floor_bps) else np.nan
+    k_last = max(drop_ks)
+    mean_k, t_k, _ = drops[k_last]
+    gates = {
+        "net_after_cost_positive": m["mean_bps"] > 0,
+        "beats_random_basket": excess > 0,
+        "not_single_etf": (top_pick_share < 35.0) and (not np.isfinite(top_pnl_share) or top_pnl_share < 70.0),
+        "regime_robust": not (hi > 0 and lo <= 0),
+        "survives_drop_top_days": (mean_k > 0) and (t_k > 1.0),
+        "daily_ci_excludes_zero": ci_lo > 0,
+    }
+    reasons = [k for k, ok in gates.items() if not ok]
+    return dict(verdict="PASS" if not reasons else "FAIL", fail_reasons=reasons,
+                metrics=m, net_bps=float(m["mean_bps"]), random_floor_bps=random_floor_bps,
+                excess_over_random_bps=excess, top_pick_share_pct=float(top_pick_share),
+                top_pnl_share_pct=float(top_pnl_share), regime_hi_bps=float(hi),
+                regime_lo_bps=float(lo), drop_top_days=drops,
+                daily_mean_bps=daily_mean, daily_ci=(ci_lo, ci_hi), gates=gates,
+                n_days=int(m["n_days"]))
+
+
+def print_falsification(v):
+    """Print a readable overnight falsification verdict."""
+    print(f"VERDICT: {v['verdict']}")
+    if v["fail_reasons"]:
+        print("Failed gates: " + ", ".join(v["fail_reasons"]))
+    else:
+        print("All gates passed.")
+    print(f"net/trade: {v['net_bps']:+.2f} bps | random floor: {v['random_floor_bps']:+.2f} bps | excess: {v['excess_over_random_bps']:+.2f} bps")
+    print(f"top ETF pick share: {v['top_pick_share_pct']:.1f}% | top ETF P&L share: {v['top_pnl_share_pct']:.1f}%")
+    print(f"regime hi/lo: {v['regime_hi_bps']:+.2f}/{v['regime_lo_bps']:+.2f} bps")
+    print(f"daily mean: {v['daily_mean_bps']:+.2f} bps | bootstrap CI [{v['daily_ci'][0]:+.2f}, {v['daily_ci'][1]:+.2f}]")
+    print("drop top move days:", v["drop_top_days"])
 
 
 def summarize_rule_grid(overnight, signal_returns, rules=("reversal", "mean", "tstat", "momentum", "low_vol"),
@@ -582,7 +730,7 @@ def main(argv=None):
     ap.add_argument("--cost-model", choices=["flat", "etf"], default="flat",
                     help="flat uses --cost-bps; etf uses a rough per-ETF round-trip cost table.")
     ap.add_argument("--benchmark", default="SPY", help="Close-to-close benchmark ticker, if loaded.")
-    ap.add_argument("--mode", choices=["static", "rule", "grid", "oos", "shadow-plan"], default="static",
+    ap.add_argument("--mode", choices=["static", "rule", "grid", "oos", "shadow-plan", "falsify"], default="static",
                     help="static=fixed basket, rule=one dynamic rule, grid=parameter table, oos=calendar segments, shadow-plan=next basket.")
     ap.add_argument("--rule", choices=["mean", "tstat", "momentum", "reversal", "low_vol"], default="reversal")
     ap.add_argument("--rules", default="reversal,mean,tstat,momentum,low_vol")
@@ -596,6 +744,8 @@ def main(argv=None):
                     help="Return panel used for rule scoring.")
     ap.add_argument("--oos-freq", default="Y", help="Calendar split frequency for --mode oos, e.g. Y or Q.")
     ap.add_argument("--notional", type=float, default=10_000.0, help="Notional for --mode shadow-plan.")
+    ap.add_argument("--random-seeds", type=int, default=20)
+    ap.add_argument("--bootstrap-n", type=int, default=5000)
     ap.add_argument("--gate", choices=["none", "vix-macro"], default="none",
                     help="Optional risk gate applied before the close-to-open trade.")
     ap.add_argument("--vix-ticker", default=DEFAULT_VIX_TICKER)
@@ -631,6 +781,19 @@ def main(argv=None):
         print("== overnight shadow plan ==")
         print(plan.round(6).to_string(index=False) if not plan.empty else "No plan.")
         print("\nCaveat: this is a shadow plan only; it does not submit broker orders.")
+        return
+    if args.mode == "falsify":
+        v = falsify_selection_rule(
+            overnight, signal_returns, rule=args.rule, lookback=args.lookback,
+            top_n=args.top_n, universe=tickers, weighting=args.weighting,
+            cap=args.cap, cost_bps=args.cost_bps, cost_by_ticker=cost_by_ticker,
+            regime=reg, vix_max=args.vix_max, macro_min=args.macro_min,
+            decision_lag=args.decision_lag, random_seeds=args.random_seeds,
+            bootstrap_n=args.bootstrap_n,
+        )
+        print(f"== overnight rule falsification [{provider}] ==")
+        print_falsification(v)
+        print("\nCaveat: this is a basket-aware falsifier, not a guarantee of future profitability.")
         return
     if args.mode == "grid":
         grid = summarize_rule_grid(

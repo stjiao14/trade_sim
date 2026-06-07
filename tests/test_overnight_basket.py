@@ -110,3 +110,35 @@ def test_cost_model_uses_weighted_per_ticker_cost():
     w = pd.Series({"A": 0.75, "B": 0.25})
     c = ob.realized_cost_bps(w, cost_bps=1.0, cost_by_ticker={"A": 2.0, "B": 6.0})
     assert abs(c - 3.0) < 1e-12
+
+
+def test_basket_falsifier_structure_and_random_floor():
+    idx = pd.bdate_range("2026-01-01", periods=30)
+    signal = pd.DataFrame({
+        "A": np.linspace(0.01, 0.02, len(idx)),
+        "B": np.zeros(len(idx)),
+        "C": -np.linspace(0.01, 0.02, len(idx)),
+    }, index=idx)
+    overnight = pd.DataFrame({
+        "A": np.full(len(idx), 0.01),
+        "B": np.zeros(len(idx)),
+        "C": np.full(len(idx), -0.01),
+    }, index=idx)
+    v = ob.falsify_selection_rule(
+        overnight, signal, rule="mean", lookback=5, top_n=1,
+        cost_bps=0.0, random_seeds=3, bootstrap_n=200, drop_ks=(0, 1)
+    )
+    assert v["verdict"] in ("PASS", "FAIL")
+    assert v["net_bps"] > v["random_floor_bps"]
+    assert set(v["gates"])
+
+
+def test_drop_top_move_days_and_attribution():
+    r = ob.overnight_returns(_bars())
+    res = ob.backtest_selection_rule(r, r, rule="mean", lookback=2, top_n=1, cost_bps=0.0)
+    attr, pick_share, pnl_share = ob.basket_attribution(res)
+    drops = ob.drop_top_move_days(res, r, ks=(0, 1))
+    assert not attr.empty
+    assert pick_share >= 0
+    assert np.isfinite(pnl_share)
+    assert 0 in drops and 1 in drops

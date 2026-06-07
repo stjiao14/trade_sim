@@ -386,6 +386,14 @@ python overnight_basket_backtest.py --mode oos --rules reversal --lookbacks 40,6
 
 `--tickers expanded` uses a broader liquid ETF universe across broad market, sectors, factors, international, bonds, gold, and commodities. `--cost-model etf` applies a rough per-ETF round-trip cost table instead of one flat cost. This is still a research approximation; production execution needs measured MOC/MOO slippage by ETF.
 
+Basket-aware falsification gates:
+
+```bash
+python overnight_basket_backtest.py --mode falsify --rule mean --lookback 40 --top-n 5 --tickers expanded --start 2019-01-01 --gate vix-macro --cost-model etf
+```
+
+This runs a strategy-specific gauntlet: positive after cost, beats random top-N basket, not dominated by one ETF, not only high-volatility-regime profit, survives dropping the largest overnight move days, and has a positive daily bootstrap lower bound. In the first long-window pass, `mean/40/top5` passed these basket-aware gates, while the PDF-overlap-friendly `reversal/60/top5` failed by losing to random, relying on high-move regimes, and having a bootstrap CI that crossed zero.
+
 Next-session shadow plan:
 
 ```bash
