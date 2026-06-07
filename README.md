@@ -371,6 +371,27 @@ The macro axis is:
 
 `--provider auto` tries Polygon/Massive first when configured, then falls back to yfinance. The current version supports fixed equal-weight or custom-weight basket research from Python. The next layer is candidate ETF selection rules.
 
+Dynamic ETF selection rules are also supported:
+
+```bash
+python overnight_basket_backtest.py --mode rule --rule reversal --lookback 60 --top-n 5 --weighting equal --tickers expanded --start 2019-01-01 --gate vix-macro --cost-model etf
+```
+
+Parameter-grid and OOS segment checks:
+
+```bash
+python overnight_basket_backtest.py --mode grid --rules reversal,mean,tstat,momentum,low_vol --lookbacks 20,40,60,120 --top-ns 5 --tickers expanded --start 2019-01-01 --gate vix-macro --cost-model etf
+python overnight_basket_backtest.py --mode oos --rules reversal --lookbacks 40,60,120 --top-ns 5 --tickers expanded --start 2019-01-01 --gate vix-macro --cost-model etf --oos-freq Y
+```
+
+`--tickers expanded` uses a broader liquid ETF universe across broad market, sectors, factors, international, bonds, gold, and commodities. `--cost-model etf` applies a rough per-ETF round-trip cost table instead of one flat cost. This is still a research approximation; production execution needs measured MOC/MOO slippage by ETF.
+
+Next-session shadow plan:
+
+```bash
+python overnight_basket_backtest.py --mode shadow-plan --rule reversal --lookback 60 --top-n 5 --tickers expanded --notional 10000
+```
+
 Useful Python entry points:
 
 ```python
@@ -380,6 +401,8 @@ bars, provider = ob.load_daily_ohlc(["XLU", "GLD", "SMH"], "2019-01-01", provide
 overnight = ob.overnight_returns(bars)
 res = ob.backtest_static_basket(overnight, cost_bps=1.0)
 ob.print_report(res, ob.performance_metrics(res))
+grid = ob.summarize_rule_grid(overnight, overnight)
+panel = ob.to_signal_lab_panel(overnight)
 ```
 
 ## B. Personal Risk X-ray

@@ -73,3 +73,40 @@ def test_apply_regime_gate_uses_lagged_decision_data():
     lagged = ob.apply_regime_gate(res, regime, vix_max=30, macro_min=-0.2, decision_lag=1)
     assert list(same_day["date"]) == [pd.Timestamp("2026-01-02")]
     assert list(lagged["date"]) == [pd.Timestamp("2026-01-05")]
+
+
+def test_selection_rule_backtest_selects_history_only_winner():
+    idx = pd.bdate_range("2026-01-01", periods=8)
+    signal = pd.DataFrame({
+        "A": [0.01, 0.01, 0.01, 0.01, -0.50, -0.50, -0.50, -0.50],
+        "B": [0.00, 0.00, 0.00, 0.00, 0.90, 0.90, 0.90, 0.90],
+    }, index=idx)
+    overnight = pd.DataFrame({"A": [0.02] * 8, "B": [-0.01] * 8}, index=idx)
+    res = ob.backtest_selection_rule(overnight, signal, rule="mean", lookback=4, top_n=1, cost_bps=0.0)
+    first = res.iloc[0]
+    assert first["date"] == idx[4]
+    assert first["picks"] == "A"
+    assert abs(first["net"] - 0.02) < 1e-12
+
+
+def test_grid_oos_shadow_and_signal_lab_bridge():
+    r = ob.overnight_returns(_bars())
+    grid = ob.summarize_rule_grid(r, r, rules=("mean", "reversal"), lookbacks=(2,), top_ns=(1,), cost_bps=0.0)
+    assert set(grid["rule"]) == {"mean", "reversal"}
+    oos = ob.walk_forward_oos_grid(
+        r, r, [dict(rule="mean", lookback=2, top_n=1, weighting="equal", cost_bps=0.0)], freq="Y"
+    )
+    assert not oos.empty
+    plan = ob.next_selection_plan(_bars(), rule="mean", lookback=2, top_n=1, notional=1000.0)
+    assert not plan.empty and abs(plan["notional"].sum() - 1000.0) < 1e-12
+    panel = ob.to_signal_lab_panel(r)
+    assert set(panel.columns) == {"date", "slot", "ticker", "ret"}
+    fn = ob.overnight_signal_fn("mean")
+    wide = panel.pivot_table(index="date", columns="ticker", values="ret")
+    assert not fn(wide).empty
+
+
+def test_cost_model_uses_weighted_per_ticker_cost():
+    w = pd.Series({"A": 0.75, "B": 0.25})
+    c = ob.realized_cost_bps(w, cost_bps=1.0, cost_by_ticker={"A": 2.0, "B": 6.0})
+    assert abs(c - 3.0) < 1e-12
