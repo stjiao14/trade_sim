@@ -83,7 +83,7 @@ def load_full_portfolio(csv_path):
 
 def _download_close(tickers, lookback_days):
     px = yf.download(tickers, period=f"{lookback_days}d", interval="1d",
-                     progress=False, auto_adjust=False)["Close"]
+                     progress=False, auto_adjust=False, threads=False)["Close"]
     if isinstance(px, pd.Series):
         px = px.to_frame(tickers[0])
     return px
@@ -136,7 +136,9 @@ def factor_xray(port, lookback_days=750, proxies=FACTOR_PROXIES):
     """Run an ETF-proxy OLS factor x-ray. Proxies are collinear; read R2 and dominant betas."""
     px = _download_close(list(proxies.values()), lookback_days)
     fx = px.pct_change().dropna()
-    fx.columns = list(proxies.keys())
+    # yfinance may return columns in alphabetical rather than requested order;
+    # rename by label, never by position.
+    fx = fx.rename(columns={v: k for k, v in proxies.items()})[list(proxies.keys())]
     df = pd.concat([port, fx], axis=1, join="inner").dropna()
     if len(df) <= len(proxies) + 2:
         raise ValueError("return history is too short for factor regression")

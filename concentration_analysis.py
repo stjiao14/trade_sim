@@ -16,7 +16,10 @@ except ImportError:
 
 def fetch_prices(tickers=TICKERS):
     """Latest close prices."""
-    px = yf.download(tickers, period="5d", interval="1d", progress=False)["Close"].iloc[-1]
+    # threads=False avoids sqlite "database is locked" from the cookie cache;
+    # ffill guards against a trailing NaN placeholder row from Yahoo.
+    px = yf.download(tickers, period="5d", interval="1d", progress=False,
+                     threads=False)["Close"].ffill().iloc[-1]
     return {t: float(px[t]) for t in tickers}
 
 
@@ -113,7 +116,8 @@ def compute_lookthrough(H, px, w_spy, w_qqq):
 
 def corr_and_beta(H, px, lookback_days=750):
     """Estimate beta/R2 of the GOOGL/SPY/QQQ/TQQQ sleeve to GOOGL from daily returns."""
-    hist = yf.download(TICKERS, period=f"{lookback_days}d", interval="1d", progress=False)["Close"]
+    hist = yf.download(TICKERS, period=f"{lookback_days}d", interval="1d", progress=False,
+                       threads=False)["Close"]
     R = hist.pct_change().dropna()
     usd = np.array([H["googl_shares"]*px["GOOGL"], H["spy_usd"], H["qqq_usd"], H["tqqq_usd"]], float)
     if usd.sum() <= 0:

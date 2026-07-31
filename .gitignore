@@ -4,3 +4,15 @@ __pycache__/
 *.pyc
 paper_logs/
 broker_benchmark_logs/
+
+# Local real holdings (never commit real dollar amounts)
+holdings.csv
+profolio.xlsx
+.venv/
+portfolio_report.pdf
+portfolio_report.html
+plotly.min.js
+tex-svg.js
+tv_portfolio.csv
+holdings_report.html
+example.*.csv

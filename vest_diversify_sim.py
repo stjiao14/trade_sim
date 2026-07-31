@@ -83,7 +83,7 @@ def _calibrate_polygon(basket_proxy, lookback_days, api_key=None):
 def _calibrate_yfinance(basket_proxy, lookback_days):
     """yfinance fallback: estimate annualized vol/correlation from daily returns."""
     px = yf.download(["GOOGL", basket_proxy], period=f"{lookback_days}d", interval="1d",
-                     progress=False, auto_adjust=False)["Close"].dropna()
+                     progress=False, auto_adjust=False, threads=False)["Close"].dropna()
     r = np.log(px).diff().dropna()
     sg = float(r["GOOGL"].std() * np.sqrt(252))
     sb = float(r[basket_proxy].std() * np.sqrt(252))
